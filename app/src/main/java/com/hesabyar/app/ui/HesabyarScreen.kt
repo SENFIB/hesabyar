@@ -96,7 +96,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
                 .padding(padding)
         ) { page ->
             when (page) {
-                0 -> LedgerScreen(vm, regionType)
+                0 -> AccountingScreen(vm, regionType)
                 1 -> StoreScreen(vm, regionType)
                 2 -> WeatherScreen(vm, regionType)
                 else -> SettingsScreen(vm, regionType)
