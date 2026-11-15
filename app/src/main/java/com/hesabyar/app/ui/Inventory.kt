@@ -56,8 +56,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -277,6 +281,43 @@ private fun copyImageToApp(ctx: Context, uri: Uri): String? {
 private fun decodeThumb(path: String): ImageBitmap? {
     val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
     return BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+}
+
+// جداکننده هزار‌رقم هنگام تایپ مبلغ؛ فقط نمایش است و مقدار واقعی همان ارقام است
+private class InvAmountTransformation : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text
+        val n = raw.length
+        val sb = StringBuilder()
+        for (i in raw.indices) {
+            if (i > 0 && (n - i) % 3 == 0) sb.append(',')
+            sb.append(raw[i])
+        }
+        val out = sb.toString()
+        val mapping = object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int {
+                if (offset <= 0) return 0
+                var seen = 0
+                for (idx in out.indices) {
+                    if (out[idx].isDigit()) {
+                        seen++
+                        if (seen == offset) return idx + 1
+                    }
+                }
+                return out.length
+            }
+
+            override fun transformedToOriginal(offset: Int): Int {
+                val end = offset.coerceIn(0, out.length)
+                var count = 0
+                for (idx in 0 until end) {
+                    if (out[idx].isDigit()) count++
+                }
+                return count
+            }
+        }
+        return TransformedText(AnnotatedString(out), mapping)
+    }
 }
 
 // سطح موجودی، T = حد هشدار که کاربر تعیین می‌کند
@@ -632,6 +673,7 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                                     label = { Text(tPrice) },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    visualTransformation = InvAmountTransformation(),
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 OutlinedTextField(
@@ -1218,6 +1260,7 @@ private fun SellDialog(
                     label = { Text(tUnit) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    visualTransformation = InvAmountTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(tTotal, fontWeight = FontWeight.Bold)
