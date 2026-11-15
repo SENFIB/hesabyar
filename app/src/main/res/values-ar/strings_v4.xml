@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tab_weather">الطقس</string>
+    <string name="v4_time_source">الوقت والتاريخ</string>
+    <string name="v4_time_auto">تلقائي (حسب اللغة)</string>
+    <string name="v4_time_device">إعدادات الهاتف</string>
+    <string name="v4_category">الفئة</string>
+    <string name="v4_custom_name">اسم مخصص (اختياري)</string>
+    <string name="v4_city">المدينة</string>
+    <string name="v4_temp_now">درجة الحرارة الآن</string>
+    <string name="v4_forecast">توقعات 5 أيام</string>
+    <string name="v4_min_max">الصغرى / العظمى</string>
+    <string name="v4_refresh">تحديث</string>
+    <string name="v4_weather_loading">جارٍ التحميل...</string>
+    <string name="v4_weather_error">تعذّر جلب بيانات الطقس. تحقق من الإنترنت وحاول مرة أخرى.</string>
+    <string name="v4_weather_source">المصدر: Open-Meteo</string>
+</resources>
