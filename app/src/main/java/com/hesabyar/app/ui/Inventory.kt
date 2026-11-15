@@ -11,13 +11,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,7 +30,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -57,6 +58,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -454,7 +456,8 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     } else {
         stockItems.filter { it.name.lowercase().contains(q) || it.code.lowercase().contains(q) }
     }
-    val gridRows = shown.chunked(2)
+    // سه ستون مساوی در هر ردیف
+    val gridRows = shown.chunked(3)
     val viewed = stockItems.filter { it.views > 0L }.sortedByDescending { it.views }
     val totalValue = stockItems.sumOf { it.price * it.stock }
     val criticalCount = stockItems.count { it.threshold > 0 && it.stock <= it.threshold }
@@ -537,47 +540,38 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // تب‌ها (قابل اسکرول افقی)
+        // تب‌های اصلی: چهار ستون مساوی
         item {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-            ) {
-                InvTabButton(label = tTabItems, selected = view == 0, onClick = { view = 0 })
-                InvTabButton(label = tTabSales, selected = view == 1, onClick = { view = 1 })
-                InvTabButton(label = tTabBest, selected = view == 2, onClick = { view = 2 })
-                InvTabButton(label = tTabViews, selected = view == 3, onClick = { view = 3 })
+            EqualRow {
+                InvTabButton(label = tTabItems, selected = view == 0, onClick = { view = 0 }, modifier = Modifier.weight(1f))
+                InvTabButton(label = tTabSales, selected = view == 1, onClick = { view = 1 }, modifier = Modifier.weight(1f))
+                InvTabButton(label = tTabBest, selected = view == 2, onClick = { view = 2 }, modifier = Modifier.weight(1f))
+                InvTabButton(label = tTabViews, selected = view == 3, onClick = { view = 3 }, modifier = Modifier.weight(1f))
             }
         }
 
         when (view) {
             0 -> {
-                // دکمه‌های نمایش بخش‌ها
+                // دکمه‌های نمایش بخش‌ها: سه ستون مساوی
                 item {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                    ) {
+                    EqualRow {
                         InvTabButton(
                             label = formToggleText,
                             selected = showForm,
-                            onClick = {
-                                if (showForm) resetForm() else showForm = true
-                            }
+                            onClick = { if (showForm) resetForm() else showForm = true },
+                            modifier = Modifier.weight(1f)
                         )
                         InvTabButton(
                             label = tShowTotals,
                             selected = showTotals,
-                            onClick = { showTotals = !showTotals }
+                            onClick = { showTotals = !showTotals },
+                            modifier = Modifier.weight(1f)
                         )
                         InvTabButton(
                             label = tShowLegend,
                             selected = showLegend,
-                            onClick = { showLegend = !showLegend }
+                            onClick = { showLegend = !showLegend },
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
@@ -734,23 +728,27 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                     item { Text(tSearchNone) }
                 }
 
-                // نمایش دوستونه کالاها
+                // نمایش سه‌ستونه کالاها با ارتفاع یکسان در هر ردیف
                 items(gridRows, key = { row -> row.first().id }) { row ->
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Max)
                     ) {
                         row.forEach { inv ->
                             InvGridCard(
                                 item = inv,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
                                 onSell = { sellTarget = inv },
                                 onView = { openDetail(inv) },
                                 onEdit = { startEdit(inv) },
                                 onDelete = { deleteTarget = inv }
                             )
                         }
-                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
@@ -842,12 +840,46 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
 
 // ---------- قسمت‌های کوچک ----------
 
+// یک ردیف با ستون‌های هم‌ارتفاع
 @Composable
-private fun InvTabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun EqualRow(content: @Composable RowScope.() -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Max),
+        content = content
+    )
+}
+
+@Composable
+private fun InvTabButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val pad = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
     if (selected) {
-        Button(onClick = onClick) { Text(label) }
+        Button(onClick = onClick, modifier = modifier.fillMaxHeight(), contentPadding = pad) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
     } else {
-        OutlinedButton(onClick = onClick) { Text(label) }
+        OutlinedButton(onClick = onClick, modifier = modifier.fillMaxHeight(), contentPadding = pad) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -930,70 +962,99 @@ private fun InvGridCard(
     val tOpen = tr("مشاهده", "View", "عرض")
     val tEdit = tr("ویرایش", "Edit", "تعديل")
     val tDel = tr("حذف", "Delete", "حذف")
-    val priceText = formatMoney(item.price)
-    val stockText = item.stock.toString()
+    val codeText = tCode + ": " + item.code
+    val priceText = tPrice + ": " + formatMoney(item.price)
+    val stockText = tStock + ": " + item.stock.toString()
 
     Card(modifier = modifier) {
         Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(6.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             ProductImage(
                 path = item.imagePath,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(110.dp)
+                    .height(90.dp)
             )
             Text(
                 item.name,
+                style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             if (item.code.isNotBlank()) {
                 Text(
-                    tCode + ": " + item.code,
-                    style = MaterialTheme.typography.bodySmall,
+                    codeText,
+                    style = MaterialTheme.typography.labelSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             Text(
-                tPrice + ": " + priceText,
-                style = MaterialTheme.typography.bodySmall,
+                priceText,
+                style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                tStock + ": " + stockText,
+                stockText,
+                style = MaterialTheme.typography.labelMedium,
                 color = levelColor,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            Text(label, color = levelColor, style = MaterialTheme.typography.labelSmall)
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = levelColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // دکمه‌ها به پایین کارت چسبیده‌اند تا همه کارت‌های یک ردیف هم‌تراز باشند
+            Spacer(Modifier.weight(1f))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Button(
                     onClick = onSell,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
-                ) { Text(tSell, maxLines = 1) }
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text(tSell, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
                 OutlinedButton(
                     onClick = onView,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
-                ) { Text(tOpen, maxLines = 1) }
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text(tOpen, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 OutlinedButton(
                     onClick = onEdit,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
-                ) { Text(tEdit, maxLines = 1) }
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text(tEdit, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
                 TextButton(
                     onClick = onDelete,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 4.dp)
-                ) { Text(tDel, color = MaterialTheme.colorScheme.error, maxLines = 1) }
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        tDel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }
