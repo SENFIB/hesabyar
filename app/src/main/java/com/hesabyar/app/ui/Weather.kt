@@ -23,19 +23,28 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.coroutines.resume
 
 // ================= مدل‌ها =================
 
 data class DayForecast(val dateMillis: Long, val min: Double, val max: Double, val code: Int)
 
-data class WeatherInfo(val current: Double, val code: Int, val days: List<DayForecast>)
+data class HourForecast(val time: String, val temp: Double, val code: Int)
+
+data class WeatherInfo(
+    val current: Double,
+    val code: Int,
+    val days: List<DayForecast>,
+    val hours: List<HourForecast>
+)
 
 sealed class WeatherState {
     object None : WeatherState()
@@ -48,12 +57,8 @@ data class CityResult(
     val name: String,
     val lat: Double,
     val lon: Double,
-    val country: String,
-    val region: String
-) {
     val subtitle: String
-        get() = listOf(region, country).filter { it.isNotBlank() }.joinToString("، ")
-}
+)
 
 // ================= ذخیره و وضعیت آب‌وهوا =================
 
@@ -63,6 +68,7 @@ object WeatherStore {
     private const val K_LON = "geo_lon"
     private const val K_PLACE = "geo_place"
     private const val K_CACHE = "geo_cache"
+    private const val K_CACHE_KEY = "geo_cache_key"
 
     var state: WeatherState by mutableStateOf(WeatherState.None)
         private set
@@ -84,14 +90,6 @@ object WeatherStore {
         refresh(ctx)
     }
 
-    // نسخه ساده برای سازگاری: اولین نتیجه جست‌وجو را ذخیره می‌کند
-    fun setManual(ctx: Context, query: String, lang: String) {
-        scope.launch {
-            val first = searchCities(query, lang).firstOrNull() ?: return@launch
-            saveCity(ctx, first.lat, first.lon, first.name)
-        }
-    }
-
     fun refresh(ctx: Context) {
         val p = prefs(ctx)
         val lat = p.getString(K_LAT, null)?.toDoubleOrNull()
@@ -101,6 +99,7 @@ object WeatherStore {
             state = WeatherState.None
             return
         }
+        val key = "$lat,$lon"
         state = WeatherState.Loading
         val appCtx = ctx.applicationContext
         scope.launch {
@@ -108,12 +107,20 @@ object WeatherStore {
                 runCatching { httpGet(forecastUrl(lat, lon)) }.getOrNull()
             }
             if (raw != null) {
-                prefs(appCtx).edit().putString(K_CACHE, raw).apply()
                 val info = parseWeather(raw)
-                state = if (info != null) WeatherState.Ok(place, info) else WeatherState.Error
+                if (info != null) {
+                    prefs(appCtx).edit()
+                        .putString(K_CACHE, raw)
+                        .putString(K_CACHE_KEY, key)
+                        .apply()
+                    state = WeatherState.Ok(place, info)
+                } else {
+                    state = WeatherState.Error
+                }
             } else {
-                // قطع اینترنت: آخرین اطلاعات ذخیره‌شده نمایش داده می‌شود
-                val cached = prefs(appCtx).getString(K_CACHE, null)
+                // قطع اینترنت: آخرین اطلاعات همین شهر نمایش داده می‌شود
+                val cp = prefs(appCtx)
+                val cached = if (cp.getString(K_CACHE_KEY, null) == key) cp.getString(K_CACHE, null) else null
                 val info = cached?.let { parseWeather(it) }
                 state = if (info != null) WeatherState.Ok(place, info) else WeatherState.Error
             }
@@ -123,9 +130,12 @@ object WeatherStore {
 
 // ================= شبکه =================
 
+private fun coord(v: Double): String = String.format(Locale.US, "%.4f", v)
+
 private fun forecastUrl(lat: Double, lon: Double): String =
-    "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+    "https://api.open-meteo.com/v1/forecast?latitude=${coord(lat)}&longitude=${coord(lon)}" +
         "&current=temperature_2m,weather_code" +
+        "&hourly=temperature_2m,weather_code" +
         "&daily=temperature_2m_max,temperature_2m_min,weather_code" +
         "&timezone=auto&forecast_days=5"
 
@@ -134,6 +144,8 @@ private fun httpGet(url: String): String {
     try {
         conn.connectTimeout = 10_000
         conn.readTimeout = 10_000
+        conn.setRequestProperty("User-Agent", "Hesabyar/0.6 (Android)")
+        conn.setRequestProperty("Accept", "application/json")
         return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
     } finally {
         conn.disconnect()
@@ -144,11 +156,13 @@ private fun parseWeather(raw: String): WeatherInfo? = try {
     val root = JSONObject(raw)
     val cur = root.getJSONObject("current")
     val daily = root.getJSONObject("daily")
+    val hourly = root.getJSONObject("hourly")
+
+    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     val times = daily.getJSONArray("time")
     val maxs = daily.getJSONArray("temperature_2m_max")
     val mins = daily.getJSONArray("temperature_2m_min")
     val codes = daily.getJSONArray("weather_code")
-    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     val days = (0 until times.length()).map { i ->
         DayForecast(
             dateMillis = f.parse(times.getString(i))?.time ?: 0L,
@@ -157,33 +171,59 @@ private fun parseWeather(raw: String): WeatherInfo? = try {
             code = codes.getInt(i)
         )
     }
+
+    // ساعت‌های ۲۴ ساعت آینده، از ساعت جاری مکان انتخابی
+    val hTimes = hourly.getJSONArray("time")
+    val hTemps = hourly.getJSONArray("temperature_2m")
+    val hCodes = hourly.getJSONArray("weather_code")
+    val nowKey = cur.getString("time").take(13)
+    val start = (0 until hTimes.length()).firstOrNull { hTimes.getString(it).take(13) == nowKey } ?: 0
+    val end = minOf(start + 24, hTimes.length())
+    val hours = (start until end).map { i ->
+        HourForecast(
+            time = hTimes.getString(i).drop(11).take(5),
+            temp = hTemps.getDouble(i),
+            code = hCodes.getInt(i)
+        )
+    }
+
     WeatherInfo(
         current = cur.getDouble("temperature_2m"),
         code = cur.getInt("weather_code"),
-        days = days
+        days = days,
+        hours = hours
     )
 } catch (e: Exception) {
     null
 }
 
+// جست‌وجوی شهر در سراسر جهان (OpenStreetMap)
 private fun geocodeList(q: String, lang: String): List<CityResult> {
     val raw = httpGet(
-        "https://geocoding-api.open-meteo.com/v1/search?name=$q&count=8&language=$lang&format=json"
+        "https://nominatim.openstreetmap.org/search?q=$q&format=jsonv2&limit=8" +
+            "&addressdetails=1&accept-language=$lang"
     )
-    val arr = JSONObject(raw).optJSONArray("results") ?: return emptyList()
-    return (0 until arr.length()).map { i ->
+    val arr = JSONArray(raw)
+    val out = ArrayList<CityResult>()
+    for (i in 0 until arr.length()) {
         val o = arr.getJSONObject(i)
-        CityResult(
-            name = o.optString("name"),
-            lat = o.getDouble("latitude"),
-            lon = o.getDouble("longitude"),
-            country = o.optString("country"),
-            region = o.optString("admin1")
+        val cls = o.optString("class")
+        if (cls != "place" && cls != "boundary") continue
+        val display = o.optString("display_name")
+        val name = o.optString("name").ifBlank { display.substringBefore(',') }
+        out.add(
+            CityResult(
+                name = name,
+                lat = o.getString("lat").toDouble(),
+                lon = o.getString("lon").toDouble(),
+                subtitle = display.substringAfter(",", "").trim()
+            )
         )
     }
+    return out
 }
 
-// جست‌وجوی شهر: ابتدا با زبان برنامه، در صورت نتیجه نداشتن با انگلیسی
+// جست‌وجوی شهر: ابتدا با زبان برنامه، اگر نتیجه نبود با انگلیسی
 suspend fun searchCities(query: String, lang: String): List<CityResult> =
     withContext(Dispatchers.IO) {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
