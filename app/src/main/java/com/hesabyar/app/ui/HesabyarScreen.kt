@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -49,7 +50,8 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val regionType = CalendarType.forLanguage(lang)
     val deviceClock by vm.deviceClock.collectAsState()
     val tabsTop = ThemeStore.settings.tabsTop
-    val pagerState = rememberPagerState(pageCount = { 4 })
+    // ۵ صفحه: ۰ حسابداری، ۱ انبار، ۲ آب‌وهوا، ۳ مرورگر، ۴ تنظیمات
+    val pagerState = rememberPagerState(pageCount = { 5 })
     val scope = rememberCoroutineScope()
     var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
     var showImageSearch by rememberSaveable { mutableStateOf(false) }
@@ -85,6 +87,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
                         0 -> AccountingScreen(vm, regionType)
                         1 -> InventoryScreen(vm, regionType)
                         2 -> WeatherScreen(vm, regionType)
+                        3 -> BrowserScreen()
                         else -> SettingsScreen(vm, regionType)
                     }
                 }
@@ -120,15 +123,19 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
 
 // ---------- نوار تب‌ها (شیشه‌ای، بالا یا پایین) ----------
 
+// هر تب یا آیکون Material دارد یا یک نماد متنی (مثل 🌐) تا به کتابخانه آیکون اضافی نیاز نباشد
+private class BarTab(val label: String, val icon: ImageVector?, val glyph: String?)
+
 @Composable
 fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val base = partColor(ThemePart.TABS, MaterialTheme.colorScheme.surface)
     val on = onColorFor(base)
     val tabs = listOf(
-        Icons.Filled.Create to stringResource(R.string.tab_ledger),
-        Icons.Filled.Home to stringResource(R.string.tab_store),
-        Icons.Filled.LocationOn to stringResource(R.string.tab_weather),
-        Icons.Filled.Settings to stringResource(R.string.tab_settings)
+        BarTab(stringResource(R.string.tab_ledger), Icons.Filled.Create, null),
+        BarTab(stringResource(R.string.tab_store), Icons.Filled.Home, null),
+        BarTab(stringResource(R.string.tab_weather), Icons.Filled.LocationOn, null),
+        BarTab(tr("مرورگر", "Browser", "المتصفح"), null, "🌐"),
+        BarTab(stringResource(R.string.tab_settings), Icons.Filled.Settings, null)
     )
 
     Row(
@@ -150,9 +157,18 @@ fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
                     .padding(vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(tab.first, contentDescription = null, tint = on)
+                val icon = tab.icon
+                if (icon != null) {
+                    Icon(icon, contentDescription = null, tint = on)
+                } else {
+                    Text(
+                        text = tab.glyph ?: "",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = on
+                    )
+                }
                 Text(
-                    text = tab.second,
+                    text = tab.label,
                     style = MaterialTheme.typography.labelSmall,
                     color = on,
                     fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
@@ -189,8 +205,14 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val weather = WeatherStore.state
     val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
 
-    val tempText = when (weather) {
-        is WeatherState.Ok -> "${weather.info.current.roundToInt()}°"
+    // دما: تبدیل به فارنهایت داخل همین فایل انجام می‌شود (°C یا °F)
+    val tempLabel = when (weather) {
+        is WeatherState.Ok -> {
+            val base = weather.info.current.toDouble()
+            val fahrenheit = WeatherStore.fahrenheit
+            val shown = if (fahrenheit) base * 9.0 / 5.0 + 32.0 else base
+            "${shown.roundToInt()}°" + if (fahrenheit) "F" else ""
+        }
         WeatherState.Loading -> "…"
         WeatherState.Error -> "--°"
         WeatherState.None -> "--°"
@@ -252,7 +274,7 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
-                            text = tempText,
+                            text = tempLabel,
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                             color = onHeader
