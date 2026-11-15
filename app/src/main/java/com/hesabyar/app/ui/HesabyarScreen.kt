@@ -155,3 +155,190 @@ fun ClockHeader(
         }
     }
 }
+
+// ---------- تب حسابداری ----------
+
+@Composable
+fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
+    val transactions by vm.transactions.collectAsState()
+
+    val totalIncome = transactions.filter { it.isIncome }.sumOf { it.amount }
+    val totalExpense = transactions.filter { !it.isIncome }.sumOf { it.amount }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            SummaryCard(
+                balance = totalIncome - totalExpense,
+                income = totalIncome,
+                expense = totalExpense
+            )
+        }
+
+        item {
+            AddTransactionCard(onAdd = { title, amount, category ->
+                vm.addTransaction(title, amount, category)
+            })
+        }
+
+        item {
+            Text(stringResource(R.string.transactions), style = MaterialTheme.typography.titleMedium)
+        }
+
+        if (transactions.isEmpty()) {
+            item {
+                Text(stringResource(R.string.no_transactions))
+            }
+        }
+
+        items(transactions, key = { it.id }) { t ->
+            TransactionRow(t = t, type = regionType, onDelete = { vm.deleteTransaction(t) })
+        }
+    }
+}
+
+@Composable
+fun SummaryCard(balance: Long, income: Long, expense: Long) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(stringResource(R.string.balance), style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = "${formatMoney(balance)} ${stringResource(R.string.currency)}",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("${stringResource(R.string.income)}: ${formatMoney(income)}")
+                Text("${stringResource(R.string.expense)}: ${formatMoney(expense)}")
+            }
+        }
+    }
+}
+
+@Composable
+fun AddTransactionCard(onAdd: (String, Long, Category) -> Unit) {
+    var isIncome by remember { mutableStateOf(false) }
+    val options = Category.entries.filter { it.isIncome == isIncome && it != Category.SALE }
+    var category by remember(isIncome) { mutableStateOf(options.first()) }
+    var title by remember { mutableStateOf("") }
+    var amountText by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<Int?>(null) }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(stringResource(R.string.add_transaction), style = MaterialTheme.typography.titleMedium)
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !isIncome,
+                    onClick = { isIncome = false },
+                    label = { Text(stringResource(R.string.expense)) }
+                )
+                FilterChip(
+                    selected = isIncome,
+                    onClick = { isIncome = true },
+                    label = { Text(stringResource(R.string.income)) }
+                )
+            }
+
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = { Text(stringResource(R.string.description)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            OutlinedTextField(
+                value = amountText,
+                onValueChange = { amountText = toLatinDigits(it) },
+                label = { Text("${stringResource(R.string.amount)} (${stringResource(R.string.currency)})") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                options.forEach { c ->
+                    FilterChip(
+                        selected = category == c,
+                        onClick = { category = c },
+                        label = { Text(stringResource(c.label)) }
+                    )
+                }
+            }
+
+            error?.let {
+                Text(stringResource(it), color = MaterialTheme.colorScheme.error)
+            }
+
+            Button(
+                onClick = {
+                    val amount = amountText.filter { it.isDigit() }.toLongOrNull()
+                    when {
+                        title.isBlank() -> error = R.string.err_title
+                        amount == null || amount <= 0L -> error = R.string.err_amount
+                        else -> {
+                            onAdd(title.trim(), amount, category)
+                            title = ""
+                            amountText = ""
+                            error = null
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.add))
+            }
+        }
+    }
+}
+
+@Composable
+fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Unit) {
+    val categoryName = Category.fromKey(t.category)?.let { stringResource(it.label) } ?: t.category
+    val dateText = formatWith(t.dateMillis, "yyyy/MM/dd HH:mm", type.locale, type.timeZone)
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(t.title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = "$categoryName • $dateText",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Text(
+                text = (if (t.isIncome) "+" else "-") + formatMoney(t.amount),
+                color = if (t.isIncome) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold
+            )
+            TextButton(onClick = onDelete) {
+                Text(stringResource(R.string.delete))
+            }
+        }
+    }
+}
