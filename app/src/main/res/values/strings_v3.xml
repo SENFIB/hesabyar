@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="v3_lock_set">Create a passcode (at least 4 digits)</string>
+    <string name="v3_lock_confirm">Enter the passcode again</string>
+    <string name="v3_lock_enter">Enter your passcode</string>
+    <string name="v3_lock_next">Continue</string>
+    <string name="v3_lock_save">Save passcode</string>
+    <string name="v3_lock_unlock">Unlock</string>
+    <string name="v3_lock_wrong">Wrong passcode</string>
+    <string name="v3_lock_mismatch">Passcodes do not match. Start again.</string>
+</resources>
