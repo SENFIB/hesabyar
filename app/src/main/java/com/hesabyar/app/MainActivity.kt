@@ -1,5 +1,6 @@
 package com.hesabyar.app
-
+import com.hesabyar.app.ui.ClockFormat
+import com.hesabyar.app.ui.FirstRunNotice
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
