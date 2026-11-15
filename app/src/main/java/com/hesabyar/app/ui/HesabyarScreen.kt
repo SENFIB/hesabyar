@@ -1,18 +1,19 @@
 package com.hesabyar.app.ui
 
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,68 +27,77 @@ import com.hesabyar.app.R
 import com.hesabyar.app.data.Category
 import com.hesabyar.app.data.TransactionEntity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
+private const val CUSTOM_PREFIX = "custom:"
+private const val OTHER_EXPENSE = "other_expense"
+private const val OTHER_INCOME = "other_income"
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HesabyarScreen(vm: MainViewModel = viewModel()) {
-    var tab by rememberSaveable { mutableStateOf(0) }
-    val lang = LocalConfiguration.current.locales[0].language
-    val regionType = CalendarType.forLanguage(lang)
-    val deviceDate by vm.deviceDate.collectAsState()
-    val deviceTime by vm.deviceTime.collectAsState()
+    val regionType = CalendarType.forLanguage(LocalConfiguration.current.locales[0].language)
+    val deviceClock by vm.deviceClock.collectAsState()
+    val pagerState = rememberPagerState(pageCount = { 4 })
+    val scope = rememberCoroutineScope()
+
+    fun goTo(page: Int) {
+        scope.launch { pagerState.animateScrollToPage(page) }
+    }
 
     Scaffold(
         topBar = {
-            ClockHeader(
-                regionType = regionType,
-                deviceDate = deviceDate,
-                deviceTime = deviceTime,
-                onToggleDate = { vm.toggleDeviceDate() },
-                onToggleTime = { vm.toggleDeviceTime() }
-            )
+            ClockHeader(regionType = regionType, deviceClock = deviceClock)
         },
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
+                    selected = pagerState.currentPage == 0,
+                    onClick = { goTo(0) },
                     icon = { Icon(Icons.Filled.Create, contentDescription = null) },
                     label = { Text(stringResource(R.string.tab_ledger)) }
                 )
                 NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
+                    selected = pagerState.currentPage == 1,
+                    onClick = { goTo(1) },
                     icon = { Icon(Icons.Filled.Home, contentDescription = null) },
                     label = { Text(stringResource(R.string.tab_store)) }
                 )
                 NavigationBarItem(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
+                    selected = pagerState.currentPage == 2,
+                    onClick = { goTo(2) },
+                    icon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
+                    label = { Text(stringResource(R.string.tab_weather)) }
+                )
+                NavigationBarItem(
+                    selected = pagerState.currentPage == 3,
+                    onClick = { goTo(3) },
                     icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                     label = { Text(stringResource(R.string.tab_settings)) }
                 )
             }
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            when (tab) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) { page ->
+            when (page) {
                 0 -> LedgerScreen(vm, regionType)
                 1 -> StoreScreen(vm, regionType)
+                2 -> WeatherScreen(vm, regionType)
                 else -> SettingsScreen(vm, regionType)
             }
         }
     }
 }
 
-// ---------- هدر ثابت: ساعت و تاریخ ----------
+// ---------- هدر ثابت: دو خط (تاریخ و ساعت) ----------
 
 @Composable
-fun ClockHeader(
-    regionType: CalendarType,
-    deviceDate: Boolean,
-    deviceTime: Boolean,
-    onToggleDate: () -> Unit,
-    onToggleTime: () -> Unit
-) {
+fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val now by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
@@ -95,63 +105,31 @@ fun ClockHeader(
         }
     }
 
-    val dateLocale = if (deviceDate) deviceLocale() else regionType.locale
-    val dateZone = if (deviceDate) deviceTimeZone() else regionType.timeZone
-    val timeLocale = if (deviceTime) deviceLocale() else regionType.locale
-    val timeZone = if (deviceTime) deviceTimeZone() else regionType.timeZone
+    val locale = if (deviceClock) deviceLocale() else regionType.locale
+    val zone = if (deviceClock) deviceTimeZone() else regionType.timeZone
 
-    val dateText = formatWith(now, "EEEE, yyyy/MM/dd", dateLocale, dateZone)
-    val timeText = formatWith(now, "HH:mm:ss", timeLocale, timeZone)
-    val sourceText = stringResource(if (deviceDate) R.string.source_device else regionType.label)
+    val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
+    val timeText = formatWith(now, "HH:mm:ss", locale, zone)
 
     Surface(
         color = MaterialTheme.colorScheme.primary,
         contentColor = MaterialTheme.colorScheme.onPrimary,
         shadowElevation = 4.dp
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = stringResource(R.string.app_name),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(sourceText, style = MaterialTheme.typography.labelLarge)
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = dateText,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    onClick = onToggleDate,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Text(stringResource(if (deviceDate) R.string.btn_to_region else R.string.btn_to_device))
-                }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = timeText,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(
-                    onClick = onToggleTime,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Text(stringResource(if (deviceTime) R.string.btn_to_region else R.string.btn_to_device))
-                }
-            }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = dateText,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = timeText,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -179,9 +157,7 @@ fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
         }
 
         item {
-            AddTransactionCard(onAdd = { title, amount, category ->
-                vm.addTransaction(title, amount, category)
-            })
+            AddTransactionCard(vm = vm)
         }
 
         item {
@@ -227,14 +203,33 @@ fun SummaryCard(balance: Long, income: Long, expense: Long) {
     }
 }
 
+// نام نمایشی یک دسته‌بندی (کلید آماده یا نام دلخواه)
 @Composable
-fun AddTransactionCard(onAdd: (String, Long, Category) -> Unit) {
+fun categoryName(key: String): String {
+    if (key.startsWith(CUSTOM_PREFIX)) return key.removePrefix(CUSTOM_PREFIX)
+    val cat = Category.fromKey(key) ?: return key
+    return stringResource(cat.label)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddTransactionCard(vm: MainViewModel) {
+    val customIncome by vm.customIncome.collectAsState()
+    val customExpense by vm.customExpense.collectAsState()
+
     var isIncome by remember { mutableStateOf(false) }
-    val options = Category.entries.filter { it.isIncome == isIncome && it != Category.SALE }
-    var category by remember(isIncome) { mutableStateOf(options.first()) }
+    val predefined = Category.entries.filter { it.isIncome == isIncome && it != Category.SALE }
+    val customs = if (isIncome) customIncome else customExpense
+    val options = predefined.map { it.key } + customs.map { CUSTOM_PREFIX + it }
+
+    var selected by remember(isIncome) { mutableStateOf(predefined.first().key) }
+    var customName by remember(isIncome) { mutableStateOf("") }
+    var expanded by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<Int?>(null) }
+
+    val isOther = selected == OTHER_EXPENSE || selected == OTHER_INCOME
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -273,17 +268,44 @@ fun AddTransactionCard(onAdd: (String, Long, Category) -> Unit) {
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = it }
             ) {
-                options.forEach { c ->
-                    FilterChip(
-                        selected = category == c,
-                        onClick = { category = c },
-                        label = { Text(stringResource(c.label)) }
-                    )
+                OutlinedTextField(
+                    value = categoryName(selected),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text(stringResource(R.string.v4_category)) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier
+                        .menuAnchor()
+                        .fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    options.forEach { key ->
+                        DropdownMenuItem(
+                            text = { Text(categoryName(key)) },
+                            onClick = {
+                                selected = key
+                                expanded = false
+                            }
+                        )
+                    }
                 }
+            }
+
+            if (isOther) {
+                OutlinedTextField(
+                    value = customName,
+                    onValueChange = { customName = it },
+                    label = { Text(stringResource(R.string.v4_custom_name)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
 
             error?.let {
@@ -297,9 +319,16 @@ fun AddTransactionCard(onAdd: (String, Long, Category) -> Unit) {
                         title.isBlank() -> error = R.string.err_title
                         amount == null || amount <= 0L -> error = R.string.err_amount
                         else -> {
-                            onAdd(title.trim(), amount, category)
+                            val category = if (isOther && customName.isNotBlank()) {
+                                vm.saveCategory(customName, isIncome)
+                                CUSTOM_PREFIX + customName.trim()
+                            } else {
+                                selected
+                            }
+                            vm.addTransaction(title.trim(), amount, isIncome, category)
                             title = ""
                             amountText = ""
+                            customName = ""
                             error = null
                         }
                     }
@@ -314,7 +343,7 @@ fun AddTransactionCard(onAdd: (String, Long, Category) -> Unit) {
 
 @Composable
 fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Unit) {
-    val categoryName = Category.fromKey(t.category)?.let { stringResource(it.label) } ?: t.category
+    val categoryText = categoryName(t.category)
     val dateText = formatWith(t.dateMillis, "yyyy/MM/dd HH:mm", type.locale, type.timeZone)
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -327,7 +356,7 @@ fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Uni
             Column(modifier = Modifier.weight(1f)) {
                 Text(t.title, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = "$categoryName • $dateText",
+                    text = "$categoryText • $dateText",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
