@@ -97,7 +97,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
         ) { page ->
             when (page) {
                 0 -> AccountingScreen(vm, regionType)
-                1 -> StoreScreen(vm, regionType)
+                1 -> InventoryScreen(vm, regionType)
                 2 -> WeatherScreen(vm, regionType)
                 else -> SettingsScreen(vm, regionType)
             }
@@ -109,7 +109,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     }
 }
 
-// ---------- هدر: تاریخ و ساعت (دو خط) + شهر، دما و وضعیت هوا + دکمه تم ----------
+// ---------- هدر: تاریخ و ساعت (دو خط) + دکمه تم + آب‌وهوا (آیکون، دما، شهر) ----------
 
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
@@ -133,14 +133,16 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val dark = isDarkNow()
     val weather = WeatherStore.state
 
+    val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
+
     val tempText = when (weather) {
         is WeatherState.Ok -> "${weather.info.current.roundToInt()}°"
         WeatherState.Loading -> "…"
         WeatherState.Error -> "--°"
         WeatherState.None -> "--°"
     }
-    val condText = when (weather) {
-        is WeatherState.Ok -> listOf(weather.place, conditionText(weather.info.code, lang))
+    val placeText = when (weather) {
+        is WeatherState.Ok -> listOf(weather.place, conditionWord(weather.info.code, lang))
             .filter { it.isNotBlank() }
             .joinToString(" · ")
         WeatherState.Loading -> tr("در حال دریافت", "Loading", "جارٍ التحميل")
@@ -156,9 +158,10 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // تاریخ و ساعت
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = dateText,
@@ -174,41 +177,46 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 )
             }
 
-            Column(horizontalAlignment = Alignment.End) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            // دکمه تم، کنار تاریخ
+            TextButton(
+                onClick = {
+                    ThemeStore.save(
+                        context,
+                        ThemeStore.settings.copy(mode = if (dark) 1 else 2)
+                    )
+                },
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                contentPadding = PaddingValues(horizontal = 4.dp)
+            ) {
+                Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
+            }
+
+            // آب‌وهوا: دما و شهر در یک ستون، آیکون کشیده‌شده کنارش
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(horizontalAlignment = Alignment.End) {
                     Text(
                         text = tempText,
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold
                     )
-                    TextButton(
-                        onClick = {
-                            ThemeStore.save(
-                                context,
-                                ThemeStore.settings.copy(mode = if (dark) 1 else 2)
-                            )
-                        },
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        contentPadding = PaddingValues(horizontal = 6.dp)
-                    ) {
-                        Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
-                    }
+                    Text(
+                        text = placeText,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 150.dp)
+                    )
                 }
-                Text(
-                    text = condText,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = 220.dp)
-                )
+                Spacer(modifier = Modifier.width(6.dp))
+                WeatherGlyph(code = glyphCode, size = 40.dp)
             }
         }
     }
 }
 
-// ---------- تب حسابداری ----------
+// ---------- تب حسابداری (بخش تراکنش‌ها؛ زیرتب‌ها در AccountingScreen هستند) ----------
 
 @Composable
 fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
