@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="v3_lock_set">أنشئ رمز المرور (4 أرقام على الأقل)</string>
+    <string name="v3_lock_confirm">أدخل رمز المرور مرة أخرى</string>
+    <string name="v3_lock_enter">أدخل رمز المرور</string>
+    <string name="v3_lock_next">متابعة</string>
+    <string name="v3_lock_save">حفظ رمز المرور</string>
+    <string name="v3_lock_unlock">دخول</string>
+    <string name="v3_lock_wrong">رمز المرور غير صحيح</string>
+    <string name="v3_lock_mismatch">رمزا المرور غير متطابقين. ابدأ من جديد.</string>
+</resources>
