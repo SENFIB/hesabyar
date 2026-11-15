@@ -114,8 +114,6 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
         }
     }
 
-    val utc = TimeZone.getTimeZone("UTC")
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -161,7 +159,12 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = formatWith(day.dateMillis, "EEEE, yyyy/MM/dd", regionType.locale, utc),
+                                    text = formatWith(
+                                        day.dateMillis,
+                                        "EEEE, yyyy/MM/dd",
+                                        regionType.locale,
+                                        regionType.timeZone
+                                    ),
                                     modifier = Modifier.weight(1f)
                                 )
                                 Text(
