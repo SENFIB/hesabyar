@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tab_weather">آب و هوا</string>
+    <string name="v4_time_source">زمان و تاریخ</string>
+    <string name="v4_time_auto">خودکار (بر اساس زبان)</string>
+    <string name="v4_time_device">تنظیمات گوشی</string>
+    <string name="v4_category">دسته‌بندی</string>
+    <string name="v4_custom_name">نام دلخواه (اختیاری)</string>
+    <string name="v4_city">شهر</string>
+    <string name="v4_temp_now">دمای فعلی</string>
+    <string name="v4_forecast">پیش‌بینی ۵ روز</string>
+    <string name="v4_min_max">کمینه / بیشینه</string>
+    <string name="v4_refresh">به‌روزرسانی</string>
+    <string name="v4_weather_loading">در حال دریافت...</string>
+    <string name="v4_weather_error">دریافت آب و هوا انجام نشد. اینترنت را بررسی کنید و دوباره تلاش کنید.</string>
+    <string name="v4_weather_source">منبع داده: Open-Meteo</string>
+</resources>
