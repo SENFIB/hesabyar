@@ -1,224 +1,250 @@
 package com.hesabyar.app.ui
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import com.hesabyar.app.R
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Bundle
+import android.os.Looper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.hesabyar.app.MainActivity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import kotlin.math.roundToInt
+import kotlin.coroutines.resume
 
-data class City(
-    val fa: String,
-    val en: String,
-    val ar: String,
-    val lat: Double,
-    val lon: Double
-) {
-    fun nameFor(lang: String): String = when (lang) {
-        "fa" -> fa
-        "ar" -> ar
-        else -> en
-    }
-}
+data class DayForecast(val dateMillis: Long, val min: Double, val max: Double, val code: Int)
 
-val CITIES = listOf(
-    City("تهران", "Tehran", "طهران", 35.6892, 51.3890),
-    City("مشهد", "Mashhad", "مشهد", 36.2605, 59.6168),
-    City("اصفهان", "Isfahan", "أصفهان", 32.6539, 51.6660),
-    City("شیراز", "Shiraz", "شيراز", 29.5918, 52.5836),
-    City("تبریز", "Tabriz", "تبريز", 38.0962, 46.2738),
-    City("اهواز", "Ahvaz", "الأهواز", 31.3183, 48.6706),
-    City("ریاض", "Riyadh", "الرياض", 24.7136, 46.6753),
-    City("جده", "Jeddah", "جدة", 21.4858, 39.1925),
-    City("دبی", "Dubai", "دبي", 25.2048, 55.2708),
-    City("لندن", "London", "لندن", 51.5072, -0.1276)
-)
-
-data class DayForecast(val dateMillis: Long, val min: Double, val max: Double)
-
-data class WeatherInfo(val current: Double, val days: List<DayForecast>)
+data class WeatherInfo(val current: Double, val code: Int, val days: List<DayForecast>)
 
 sealed interface WeatherState {
+    data object None : WeatherState
     data object Loading : WeatherState
     data object Error : WeatherState
-    data class Ok(val info: WeatherInfo) : WeatherState
+    data class Ok(val place: String, val info: WeatherInfo) : WeatherState
 }
 
-private suspend fun fetchWeather(city: City): WeatherInfo = withContext(Dispatchers.IO) {
-    val url = URL(
-        "https://api.open-meteo.com/v1/forecast" +
-            "?latitude=${city.lat}&longitude=${city.lon}" +
-            "&current=temperature_2m&daily=temperature_2m_max,temperature_2m_min" +
-            "&timezone=auto&forecast_days=5"
-    )
-    val conn = url.openConnection() as HttpURLConnection
-    try {
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 10_000
-        val body = conn.inputStream.bufferedReader().use { it.readText() }
-        val json = JSONObject(body)
+// وضعیت آب‌وهوا در کل برنامه (هدر و تب آب‌وهوا از همین استفاده می‌کنند)
+object WeatherStore {
+    private const val PREFS = "hesabyar_weather"
 
-        val current = json.getJSONObject("current").getDouble("temperature_2m")
-        val daily = json.getJSONObject("daily")
-        val times = daily.getJSONArray("time")
-        val maxs = daily.getJSONArray("temperature_2m_max")
-        val mins = daily.getJSONArray("temperature_2m_min")
+    var state: WeatherState by mutableStateOf<WeatherState>(WeatherState.None)
+        private set
 
-        val parser = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-        }
-        val days = (0 until times.length()).map { i ->
-            DayForecast(
-                dateMillis = parser.parse(times.getString(i))?.time ?: 0L,
-                min = mins.getDouble(i),
-                max = maxs.getDouble(i)
-            )
-        }
-        WeatherInfo(current, days)
-    } finally {
-        conn.disconnect()
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun hasLocation(ctx: Context): Boolean = prefs(ctx).contains("lat")
+
+    fun savedPlace(ctx: Context): String? = prefs(ctx).getString("place", null)
+
+    private fun save(ctx: Context, lat: Double, lon: Double, place: String) {
+        prefs(ctx).edit()
+            .putString("lat", lat.toString())
+            .putString("lon", lon.toString())
+            .putString("place", place)
+            .apply()
     }
-}
 
-@Composable
-fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
-    val cityIndexSaved by vm.weatherCity.collectAsState()
-    val lang = LocalConfiguration.current.locales[0].language
-    val cityIndex = cityIndexSaved.coerceIn(0, CITIES.lastIndex)
-    val city = CITIES[cityIndex]
-
-    var reload by remember { mutableIntStateOf(0) }
-    var state by remember { mutableStateOf<WeatherState>(WeatherState.Loading) }
-
-    LaunchedEffect(city, reload) {
+    suspend fun refresh(ctx: Context) {
+        val p = prefs(ctx)
+        val lat = p.getString("lat", null)?.toDoubleOrNull()
+        val lon = p.getString("lon", null)?.toDoubleOrNull()
+        val place = p.getString("place", null) ?: ""
+        if (lat == null || lon == null) {
+            state = WeatherState.None
+            return
+        }
         state = WeatherState.Loading
         state = try {
-            WeatherState.Ok(fetchWeather(city))
+            val info = withContext(Dispatchers.IO) { fetchWeather(lat, lon) }
+            WeatherState.Ok(place, info)
         } catch (e: Exception) {
             WeatherState.Error
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        CityDropdown(
-            selectedIndex = cityIndex,
-            lang = lang,
-            onSelect = { vm.setWeatherCity(it) }
-        )
+    // نام شهر را وارد می‌کند؛ اگر پیدا شد ذخیره و آب‌وهوا گرفته می‌شود
+    suspend fun setManual(ctx: Context, query: String, lang: String): Boolean {
+        val found = withContext(Dispatchers.IO) { geocode(query, lang) } ?: return false
+        save(ctx, found.lat, found.lon, found.name)
+        refresh(ctx)
+        return true
+    }
 
-        when (val s = state) {
-            WeatherState.Loading -> Text(stringResource(R.string.v4_weather_loading))
-            WeatherState.Error -> Text(
-                stringResource(R.string.v4_weather_error),
-                color = MaterialTheme.colorScheme.error
-            )
-            is WeatherState.Ok -> {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(city.nameFor(lang), style = MaterialTheme.typography.titleMedium)
-                        Text(stringResource(R.string.v4_temp_now), style = MaterialTheme.typography.bodySmall)
-                        Text(
-                            text = "${s.info.current.roundToInt()}°",
-                            style = MaterialTheme.typography.displayMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(stringResource(R.string.v4_forecast), style = MaterialTheme.typography.titleMedium)
-                        Text(stringResource(R.string.v4_min_max), style = MaterialTheme.typography.bodySmall)
-                        s.info.days.forEach { day ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = formatWith(
-                                        day.dateMillis,
-                                        "EEEE, yyyy/MM/dd",
-                                        regionType.locale,
-                                        regionType.timeZone
-                                    ),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = "${day.min.roundToInt()}° / ${day.max.roundToInt()}°",
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Button(
-            onClick = { reload = reload + 1 },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(stringResource(R.string.v4_refresh))
-        }
-
-        Text(stringResource(R.string.v4_weather_source), style = MaterialTheme.typography.bodySmall)
+    // موقعیت GPS را می‌گیرد؛ اگر نشد false برمی‌گرداند
+    suspend fun useGps(ctx: Context, label: String): Boolean {
+        val loc = LocationHelper.current(ctx) ?: return false
+        save(ctx, loc.latitude, loc.longitude, label)
+        refresh(ctx)
+        return true
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CityDropdown(selectedIndex: Int, lang: String, onSelect: (Int) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
+private data class GeoPlace(val name: String, val lat: Double, val lon: Double)
 
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it }
-    ) {
-        OutlinedTextField(
-            value = CITIES[selectedIndex].nameFor(lang),
-            onValueChange = {},
-            readOnly = true,
-            label = { Text(stringResource(R.string.v4_city)) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth()
+private fun geocode(query: String, lang: String): GeoPlace? {
+    return runCatching { geocodeOnce(query, lang) }.getOrNull()
+        ?: runCatching { geocodeOnce(query, "en") }.getOrNull()
+}
+
+private fun geocodeOnce(query: String, lang: String): GeoPlace? {
+    val encoded = URLEncoder.encode(query, "UTF-8")
+    val url = URL(
+        "https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=$lang&format=json"
+    )
+    val json = JSONObject(readUrl(url))
+    val results = json.optJSONArray("results") ?: return null
+    if (results.length() == 0) return null
+    val r = results.getJSONObject(0)
+    return GeoPlace(r.getString("name"), r.getDouble("latitude"), r.getDouble("longitude"))
+}
+
+private fun readUrl(url: URL): String {
+    val conn = url.openConnection() as HttpURLConnection
+    try {
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 10_000
+        return conn.inputStream.bufferedReader().use { it.readText() }
+    } finally {
+        conn.disconnect()
+    }
+}
+
+private fun fetchWeather(lat: Double, lon: Double): WeatherInfo {
+    val url = URL(
+        "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+            "&current=temperature_2m,weather_code" +
+            "&daily=temperature_2m_max,temperature_2m_min,weather_code" +
+            "&timezone=auto&forecast_days=5"
+    )
+    val json = JSONObject(readUrl(url))
+    val cur = json.getJSONObject("current")
+    val daily = json.getJSONObject("daily")
+    val times = daily.getJSONArray("time")
+    val maxs = daily.getJSONArray("temperature_2m_max")
+    val mins = daily.getJSONArray("temperature_2m_min")
+    val codes = daily.getJSONArray("weather_code")
+
+    val parser = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+    val days = (0 until times.length()).map { i ->
+        DayForecast(
+            dateMillis = parser.parse(times.getString(i))?.time ?: 0L,
+            min = mins.getDouble(i),
+            max = maxs.getDouble(i),
+            code = codes.getInt(i)
         )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            CITIES.forEachIndexed { i, c ->
-                DropdownMenuItem(
-                    text = { Text(c.nameFor(lang)) },
-                    onClick = {
-                        onSelect(i)
-                        expanded = false
+    }
+    return WeatherInfo(cur.getDouble("temperature_2m"), cur.getInt("weather_code"), days)
+}
+
+// متن وضعیت هوا بر اساس کد WMO
+fun conditionText(code: Int, lang: String): String {
+    val (icon, fa, en, ar) = when (code) {
+        0 -> listOf("☀", "آفتابی", "Clear", "صافٍ")
+        1, 2 -> listOf("🌤", "نیمه‌ابری", "Partly cloudy", "غائم جزئياً")
+        3 -> listOf("☁", "ابری", "Overcast", "غائم")
+        45, 48 -> listOf("🌫", "مه", "Fog", "ضباب")
+        51, 53, 55, 56, 57 -> listOf("🌦", "نم‌نم باران", "Drizzle", "رذاذ")
+        61, 63, 65, 66, 67, 80, 81, 82 -> listOf("🌧", "بارانی", "Rain", "ممطر")
+        71, 73, 75, 77, 85, 86 -> listOf("❄", "برفی", "Snow", "ثلجي")
+        95, 96, 99 -> listOf("⛈", "طوفان رعدوبرقی", "Thunderstorm", "عاصفة رعدية")
+        else -> listOf("•", "نامشخص", "Unknown", "غير معروف")
+    }
+    val label = when (lang) {
+        "fa" -> fa
+        "ar" -> ar
+        else -> en
+    }
+    return "$icon $label"
+}
+
+// ---------- موقعیت GPS ----------
+
+object LocationHelper {
+    fun hasPermission(ctx: Context): Boolean {
+        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun current(ctx: Context): Location? {
+        if (!hasPermission(ctx)) return null
+        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val provider = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .firstOrNull { lm.isProviderEnabled(it) } ?: return null
+
+        val fresh = withTimeoutOrNull(30_000L) {
+            suspendCancellableCoroutine<Location?> { cont ->
+                val listener = object : LocationListener {
+                    override fun onLocationChanged(location: Location) {
+                        lm.removeUpdates(this)
+                        if (cont.isActive) cont.resume(location)
                     }
-                )
+
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                }
+                lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+                cont.invokeOnCancellation { lm.removeUpdates(listener) }
             }
+        }
+        return fresh ?: lm.getLastKnownLocation(provider)
+    }
+}
+
+// درخواست اجازه موقعیت و گرفتن GPS؛ خروجی: تابعی که با کلیک صدا زده می‌شود
+@Composable
+fun rememberGpsAction(label: String, onDone: (Boolean) -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.values.any { it }) {
+            scope.launch { onDone(WeatherStore.useGps(context, label)) }
+        } else {
+            onDone(false)
+        }
+    }
+
+    return {
+        if (LocationHelper.hasPermission(context)) {
+            scope.launch { onDone(WeatherStore.useGps(context, label)) }
+        } else {
+            // نمایش پنجره اجازه باعث قفل شدن دوباره برنامه نشود
+            MainActivity.skipAutoLock = true
+            launcher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
     }
 }
