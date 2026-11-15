@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
                         LockScreen(onUnlocked = { locked.value = false })
                     } else {
                         HesabyarScreen()
+                        FirstRunNotice()
                     }
                 }
             }
