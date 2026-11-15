@@ -9,6 +9,9 @@ import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Build
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,9 +27,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -34,6 +37,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
@@ -64,6 +68,16 @@ data class CityResult(
     val subtitle: String
 )
 
+// دلیل ناموفق بودن گرفتن موقعیت
+enum class GpsFail { DENIED, SERVICES_OFF, NOT_FOUND }
+
+sealed class LocResult {
+    class Ok(val lat: Double, val lon: Double) : LocResult()
+    object Denied : LocResult()
+    object ServicesOff : LocResult()
+    object NotFound : LocResult()
+}
+
 // ================= ذخیره و وضعیت آب‌وهوا =================
 
 object WeatherStore {
@@ -73,8 +87,13 @@ object WeatherStore {
     private const val K_PLACE = "geo_place"
     private const val K_CACHE = "geo_cache"
     private const val K_CACHE_KEY = "geo_cache_key"
+    private const val K_UNIT_F = "unit_f"
 
     var state: WeatherState by mutableStateOf(WeatherState.None)
+        private set
+
+    // false = سلسیوس، true = فارنهایت
+    var fahrenheit: Boolean by mutableStateOf(false)
         private set
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -84,6 +103,15 @@ object WeatherStore {
     fun hasLocation(ctx: Context): Boolean = prefs(ctx).getString(K_LAT, null) != null
 
     fun savedPlace(ctx: Context): String = prefs(ctx).getString(K_PLACE, "") ?: ""
+
+    fun loadUnit(ctx: Context) {
+        fahrenheit = prefs(ctx).getBoolean(K_UNIT_F, false)
+    }
+
+    fun setFahrenheit(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(K_UNIT_F, value).apply()
+        fahrenheit = value
+    }
 
     fun saveCity(ctx: Context, lat: Double, lon: Double, place: String) {
         prefs(ctx).edit()
@@ -95,6 +123,7 @@ object WeatherStore {
     }
 
     fun refresh(ctx: Context) {
+        loadUnit(ctx)
         val p = prefs(ctx)
         val lat = p.getString(K_LAT, null)?.toDoubleOrNull()
         val lon = p.getString(K_LON, null)?.toDoubleOrNull()
@@ -132,6 +161,17 @@ object WeatherStore {
     }
 }
 
+// ================= واحد دما و منطقه زمانی پیش‌بینی =================
+
+// دما را طبق واحد انتخابی به عدد صحیح تبدیل می‌کند
+fun tempValue(c: Double, fahrenheit: Boolean): Int =
+    if (fahrenheit) (c * 9.0 / 5.0 + 32.0).roundToInt() else c.roundToInt()
+
+fun tempText(c: Double, fahrenheit: Boolean): String = tempValue(c, fahrenheit).toString() + "°"
+
+// تاریخ پیش‌بینی‌ها بر اساس UTC است تا روز جابه‌جا نشود
+fun forecastZone(): TimeZone = TimeZone.getTimeZone("UTC")
+
 // ================= شبکه =================
 
 private fun coord(v: Double): String = String.format(Locale.US, "%.4f", v)
@@ -162,7 +202,7 @@ private fun parseWeather(raw: String): WeatherInfo? = try {
     val daily = root.getJSONObject("daily")
     val hourly = root.getJSONObject("hourly")
 
-    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = forecastZone() }
     val times = daily.getJSONArray("time")
     val maxs = daily.getJSONArray("temperature_2m_max")
     val mins = daily.getJSONArray("temperature_2m_min")
@@ -357,51 +397,100 @@ object LocationHelper {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    private fun hasFine(ctx: Context): Boolean =
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun providerOn(lm: LocationManager, p: String): Boolean =
+        runCatching { lm.isProviderEnabled(p) }.getOrDefault(false)
+
+    // آخرین موقعیت ثبت‌شده در گوشی (اگر وجود داشته باشد)
     @SuppressLint("MissingPermission")
-    private fun lastKnown(lm: LocationManager): Location? =
-        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
-            .firstOrNull()
+    private fun lastKnown(lm: LocationManager, fine: Boolean): Location? {
+        val list = if (fine) {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        } else {
+            listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        }
+        return list
+            .mapNotNull { p -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }
+            .maxByOrNull { it.time }
+    }
 
-    // حداکثر ۳۰ ثانیه منتظر موقعیت می‌ماند، بعد آخرین موقعیت ثبت‌شده را برمی‌گرداند
+    // یک تلاش برای گرفتن موقعیت از یک سرویس. null یعنی موقعیتی نیامد.
     @SuppressLint("MissingPermission")
-    suspend fun current(ctx: Context): Location? = suspendCancellableCoroutine { cont ->
-        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val provider = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .firstOrNull { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
+    private suspend fun requestFix(ctx: Context, lm: LocationManager, provider: String): Location? =
+        suspendCancellableCoroutine<Location?> { cont ->
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val signal = CancellationSignal()
+                    cont.invokeOnCancellation { signal.cancel() }
+                    lm.getCurrentLocation(provider, signal, ContextCompat.getMainExecutor(ctx)) { loc ->
+                        if (cont.isActive) cont.resume(loc)
+                    }
+                } else {
+                    val listener = object : LocationListener {
+                        override fun onLocationChanged(location: Location) {
+                            lm.removeUpdates(this)
+                            if (cont.isActive) cont.resume(location)
+                        }
 
-        if (provider == null) {
-            cont.resume(lastKnown(lm))
-            return@suspendCancellableCoroutine
-        }
+                        @Deprecated("Deprecated in Java")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
 
-        val handler = Handler(Looper.getMainLooper())
-        var listener: LocationListener? = null
-        val timeout = Runnable {
-            listener?.let { lm.removeUpdates(it) }
-            if (cont.isActive) cont.resume(lastKnown(lm))
-        }
+                        override fun onProviderEnabled(provider: String) {}
 
-        val l = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                handler.removeCallbacks(timeout)
-                lm.removeUpdates(this)
-                if (cont.isActive) cont.resume(location)
+                        override fun onProviderDisabled(provider: String) {}
+                    }
+                    cont.invokeOnCancellation { lm.removeUpdates(listener) }
+                    lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+                }
+            } catch (e: Exception) {
+                if (cont.isActive) cont.resume(null)
             }
         }
-        listener = l
 
-        cont.invokeOnCancellation {
-            handler.removeCallbacks(timeout)
-            lm.removeUpdates(l)
+    // ترتیب: GPS (اگر اجازه دقیق باشد)، بعد شبکه. هر کدام حداکثر ۱۲ ثانیه وقت دارد.
+    @SuppressLint("MissingPermission")
+    suspend fun current(ctx: Context): LocResult {
+        if (!hasPermission(ctx)) return LocResult.Denied
+        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val fine = hasFine(ctx)
+
+        val anyOn = providerOn(lm, LocationManager.GPS_PROVIDER) || providerOn(lm, LocationManager.NETWORK_PROVIDER)
+        if (!anyOn) return LocResult.ServicesOff
+
+        val order = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { p -> providerOn(lm, p) && (p != LocationManager.GPS_PROVIDER || fine) }
+
+        for (p in order) {
+            val loc = withTimeoutOrNull(12_000L) { requestFix(ctx, lm, p) }
+            if (loc != null) return LocResult.Ok(loc.latitude, loc.longitude)
         }
 
-        handler.postDelayed(timeout, 30_000L)
-        lm.requestLocationUpdates(provider, 0L, 0f, l, Looper.getMainLooper())
+        // اگر تازه نبود، آخرین موقعیت تا ۶ ساعت قبل قابل قبول است
+        val last = lastKnown(lm, fine)?.takeIf { System.currentTimeMillis() - it.time < 6L * 60L * 60L * 1000L }
+        return if (last != null) LocResult.Ok(last.latitude, last.longitude) else LocResult.NotFound
     }
 }
 
-// نام شهر از روی مختصات (اگر دستگاه پشتیبانی کند)
+// نام شهر از روی مختصات با سرویس OpenStreetMap (بهتر از Geocoder گوشی برای نام شهر)
+// باید خارج از رابط کاربری (IO) صدا زده شود
+suspend fun reversePlace(ctx: Context, lat: Double, lon: Double, lang: String, fallback: String): String {
+    val fromNominatim = runCatching {
+        val raw = httpGet(
+            "https://nominatim.openstreetmap.org/reverse?lat=${coord(lat)}&lon=${coord(lon)}" +
+                "&format=jsonv2&zoom=10&accept-language=$lang"
+        )
+        val addr = JSONObject(raw).optJSONObject("address")
+        listOf("city", "town", "village", "municipality", "county", "state")
+            .firstNotNullOfOrNull { k -> addr?.optString(k)?.takeIf { it.isNotBlank() } }
+    }.getOrNull()
+    if (!fromNominatim.isNullOrBlank()) return fromNominatim
+    return placeNameFor(ctx, lat, lon, fallback)
+}
+
+// نام شهر از Geocoder خود گوشی (پشتیبان)
 @Suppress("DEPRECATION")
 fun placeNameFor(ctx: Context, lat: Double, lon: Double, fallback: String): String = try {
     val list: List<Address>? = Geocoder(ctx, Locale.getDefault()).getFromLocation(lat, lon, 1)
@@ -411,40 +500,55 @@ fun placeNameFor(ctx: Context, lat: Double, lon: Double, fallback: String): Stri
 }
 
 // دکمه‌ای که اجازه موقعیت می‌گیرد و موقعیت را ذخیره می‌کند.
-// اگر اجازه داده نشود، onDenied صدا زده می‌شود تا کاربر شهر را دستی وارد کند.
+// onDenied: وقتی اجازه داده نشده یا موقعیت پیدا نشد (برای باز کردن جست‌وجوی دستی)
+// onReason: دلیل دقیق شکست را می‌دهد (برای پیام به کاربر)
+// onStart: وقتی گرفتن موقعیت شروع می‌شود
 @Composable
 fun rememberGpsAction(
     label: String,
     onDone: () -> Unit,
-    onDenied: () -> Unit = {}
+    onDenied: () -> Unit = {},
+    onReason: (GpsFail) -> Unit = {},
+    onStart: () -> Unit = {}
 ): () -> Unit {
     val ctx = LocalContext.current
+    val lang = currentLang()
     val scope = rememberCoroutineScope()
     val doneNow by rememberUpdatedState(onDone)
     val deniedNow by rememberUpdatedState(onDenied)
+    val reasonNow by rememberUpdatedState(onReason)
+    val startNow by rememberUpdatedState(onStart)
+
+    fun fail(f: GpsFail) {
+        reasonNow(f)
+        if (f == GpsFail.DENIED || f == GpsFail.NOT_FOUND) deniedNow()
+    }
 
     fun fetch() {
         scope.launch {
-            val loc = LocationHelper.current(ctx)
-            if (loc == null) {
-                deniedNow()
-                return@launch
+            when (val r = LocationHelper.current(ctx)) {
+                is LocResult.Ok -> {
+                    val name = withContext(Dispatchers.IO) {
+                        reversePlace(ctx, r.lat, r.lon, lang, label)
+                    }
+                    WeatherStore.saveCity(ctx, r.lat, r.lon, name)
+                    doneNow()
+                }
+                LocResult.Denied -> fail(GpsFail.DENIED)
+                LocResult.ServicesOff -> fail(GpsFail.SERVICES_OFF)
+                LocResult.NotFound -> fail(GpsFail.NOT_FOUND)
             }
-            val name = withContext(Dispatchers.IO) {
-                placeNameFor(ctx, loc.latitude, loc.longitude, label)
-            }
-            WeatherStore.saveCity(ctx, loc.latitude, loc.longitude, name)
-            doneNow()
         }
     }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.values.any { it }) fetch() else deniedNow()
+        if (result.values.any { it }) fetch() else fail(GpsFail.DENIED)
     }
 
     return {
+        startNow()
         if (LocationHelper.hasPermission(ctx)) {
             fetch()
         } else {
