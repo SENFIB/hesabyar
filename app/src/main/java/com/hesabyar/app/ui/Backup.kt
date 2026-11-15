@@ -2,14 +2,18 @@ package com.hesabyar.app.ui
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -86,6 +90,12 @@ private val COLUMN_LABELS = mapOf(
     "unit_price" to "قیمت واحد",
     "total" to "جمع",
     "date_millis" to "تاریخ"
+)
+
+// الگوی ابتدای دستور CREATE برای اینکه دوباره ساخته نشوند
+private val CREATE_HEAD = Regex(
+    "^\\s*CREATE\\s+(UNIQUE\\s+)?(TABLE|INDEX)\\s+",
+    RegexOption.IGNORE_CASE
 )
 
 // ================= مدل‌ها و بازه زمانی =================
@@ -170,10 +180,12 @@ private fun openDbFile(ctx: Context, name: String, write: Boolean): SQLiteDataba
     }
 }
 
+// جدول‌های داخلی سیستم را کنار می‌گذاریم، ولی جدول‌های room_ را نگه می‌داریم
+// چون Room برای باز شدن دیتابیس روی گوشی جدید به آن‌ها نیاز دارد
 private fun tableNames(db: SQLiteDatabase): List<String> {
     val out = ArrayList<String>()
     db.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%' AND name NOT LIKE 'room_%'",
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'",
         null
     ).use { c ->
         while (c.moveToNext()) out.add(c.getString(0))
@@ -185,6 +197,17 @@ private fun tableSql(db: SQLiteDatabase, table: String): String? =
     db.rawQuery("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)).use { c ->
         if (c.moveToFirst()) c.getString(0) else null
     }
+
+private fun tableIndexes(db: SQLiteDatabase, table: String): JSONArray {
+    val arr = JSONArray()
+    db.rawQuery(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+        arrayOf(table)
+    ).use { c ->
+        while (c.moveToNext()) arr.put(c.getString(0))
+    }
+    return arr
+}
 
 private fun imageFileOf(ctx: Context, path: String): File {
     val f = File(path)
@@ -245,6 +268,7 @@ private fun dumpTable(
     return JSONObject()
         .put("name", table)
         .put("sql", tableSql(db, table) ?: JSONObject.NULL)
+        .put("indexes", tableIndexes(db, table))
         .put("columns", columns)
         .put("rows", rows)
 }
@@ -282,7 +306,10 @@ private fun buildBundle(ctx: Context, range: BackupRange?, periodName: String): 
             for (table in tableNames(db)) {
                 val dump = dumpTable(ctx, db, table, range, images)
                 tables.put(dump)
-                counts.put(table, dump.getJSONArray("rows").length())
+                // شمارش فقط برای جدول‌های برنامه؛ جدول room_ شمرده نمی‌شود
+                if (!table.startsWith("room_")) {
+                    counts.put(table, dump.getJSONArray("rows").length())
+                }
             }
         } finally {
             db.close()
@@ -493,6 +520,7 @@ private fun xmlEscape(s: String): String =
 // ================= بازیابی =================
 
 // فایل را از روی محتوایش تشخیص می‌دهد: ZIP (حسابیار کامل) یا JSON (قدیمی یا JSON جدید)
+// تعداد رکوردهای بازیابی‌شده را برمی‌گرداند
 fun restoreBackup(ctx: Context, input: InputStream): Int {
     val bis = BufferedInputStream(input)
     bis.mark(4)
@@ -570,19 +598,47 @@ private fun putValue(ctx: Context, cv: ContentValues, key: String, value: Any?) 
     }
 }
 
+// دستور CREATE را طوری تغییر می‌دهد که اگر چیزی از قبل وجود دارد خطا ندهد
+private fun withIfNotExists(sql: String): String =
+    CREATE_HEAD.replace(sql) { m ->
+        val unique = if (m.groupValues[1].isBlank()) "" else "UNIQUE "
+        "CREATE $unique${m.groupValues[2]} IF NOT EXISTS "
+    }
+
 private fun tableExists(db: SQLiteDatabase, table: String): Boolean =
     db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table))
         .use { it.moveToFirst() }
+
+// نام ستون‌های جدول در گوشی فعلی
+private fun tableColumns(db: SQLiteDatabase, table: String): Set<String> {
+    val out = HashSet<String>()
+    db.rawQuery("PRAGMA table_info(\"$table\")", null).use { c ->
+        val idx = c.getColumnIndex("name")
+        if (idx < 0) return out
+        while (c.moveToNext()) out.add(c.getString(idx))
+    }
+    return out
+}
 
 private fun restoreTable(ctx: Context, db: SQLiteDatabase, t: JSONObject): Int {
     val table = t.getString("name")
     if (!tableExists(db, table)) {
         // اگر جدول در گوشی جدید وجود ندارد، از همان تعریف ذخیره‌شده در بکاپ ساخته می‌شود
         val sql = t.optString("sql", "")
-        if (sql.isBlank()) return 0
-        db.execSQL(sql.replaceFirst("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", ignoreCase = true))
+        if (sql.isBlank() || sql == "null") return 0
+        db.execSQL(withIfNotExists(sql))
     }
+
+    // ایندکس‌ها را هم می‌سازیم (اگر نباشند)؛ Room بدون آن‌ها اعتبارسنجی را رد می‌کند
+    val indexes = t.optJSONArray("indexes")
+    if (indexes != null) {
+        for (i in 0 until indexes.length()) {
+            runCatching { db.execSQL(withIfNotExists(indexes.getString(i))) }
+        }
+    }
+
     val rows = t.optJSONArray("rows") ?: return 0
+    val columns = tableColumns(db, table)
     var count = 0
     for (i in 0 until rows.length()) {
         val row = rows.getJSONObject(i)
@@ -590,6 +646,8 @@ private fun restoreTable(ctx: Context, db: SQLiteDatabase, t: JSONObject): Int {
         val keys = row.keys()
         while (keys.hasNext()) {
             val key = keys.next()
+            // ستونی که در این گوشی وجود ندارد نادیده گرفته می‌شود تا کل بازیابی شکست نخورد
+            if (columns.isNotEmpty() && key !in columns) continue
             putValue(ctx, cv, key, row.opt(key))
         }
         val id = db.insertWithOnConflict(table, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
@@ -700,6 +758,18 @@ private fun importLegacy(ctx: Context, root: JSONObject): Int {
     return count
 }
 
+// برنامه را دوباره باز می‌کند تا Room داده‌های تازه را بخواند
+private fun restartApp(ctx: Context) {
+    val intent = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+    if (intent != null) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        ctx.startActivity(intent)
+    }
+    Handler(Looper.getMainLooper()).postDelayed({
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }, 500L)
+}
+
 // ================= رابط کاربری بکاپ =================
 
 @Composable
@@ -740,10 +810,12 @@ fun BackupSection(modifier: Modifier = Modifier) {
         "أُنشئت هذه النسخة بإصدار أحدث من التطبيق. يُرجى تحديثه."
     )
     val msgRestored = tr(
-        "بازیابی انجام شد. برای دیدن همه تغییرات، برنامه را ببندید و دوباره باز کنید.",
-        "Restored. Close and reopen the app to see all changes.",
-        "تمت الاستعادة. أغلق التطبيق وأعد فتحه لرؤية كل التغييرات."
+        "بازیابی انجام شد. برنامه دوباره شروع می‌شود تا همه اطلاعات بارگذاری شوند.",
+        "Restore complete. The app will restart to load all data.",
+        "تمت الاستعادة. سيُعاد تشغيل التطبيق لتحميل كل البيانات."
     )
+    val msgRestoredTitle = tr("بازیابی انجام شد", "Restore complete", "تمت الاستعادة")
+    val btnRestart = tr("شروع دوباره برنامه", "Restart app", "إعادة تشغيل التطبيق")
     val msgPeriodNote = tr(
         "بازه زمانی فقط روی تراکنش‌ها و فروش‌ها اعمال می‌شود. چک‌ها، کالاها، عکس‌ها و تنظیمات همیشه کامل ذخیره می‌شوند.",
         "The period applies only to transactions and sales. Cheques, items, photos and settings are always saved in full.",
@@ -755,7 +827,8 @@ fun BackupSection(modifier: Modifier = Modifier) {
     var toText by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    var pendingRestoreText by rememberSaveable { mutableStateOf<String?>(null) }
+    var restoredCount by remember { mutableStateOf<Int?>(null) }
 
     fun customRangeOk(): Boolean =
         period != BackupPeriod.CUSTOM ||
@@ -772,7 +845,7 @@ fun BackupSection(modifier: Modifier = Modifier) {
                     val n = runExport(ctx, uri, kind, p, from, to)
                     "$msgOk ($n)"
                 } catch (e: Exception) {
-                    msgErr + (e.message ?: "")
+                    msgErr + (e.message ?: e.javaClass.simpleName)
                 }
             }
             busy = false
@@ -782,18 +855,24 @@ fun BackupSection(modifier: Modifier = Modifier) {
     fun doRestore(uri: Uri) {
         scope.launch {
             busy = true
-            status = withContext(Dispatchers.IO) {
+            val outcome: Pair<Int, String?> = withContext(Dispatchers.IO) {
                 try {
                     val stream = ctx.contentResolver.openInputStream(uri) ?: error("file")
                     val n = stream.use { restoreBackup(ctx, it) }
-                    "$msgRestored ($n)"
+                    n to null
                 } catch (e: BackupFileException) {
-                    if (e.reason == REASON_NEWER) msgNewer else msgNotBackup
+                    -1 to (if (e.reason == REASON_NEWER) msgNewer else msgNotBackup)
                 } catch (e: Exception) {
-                    msgErr + (e.message ?: "")
+                    -1 to (msgErr + (e.message ?: e.javaClass.simpleName))
                 }
             }
             busy = false
+            if (outcome.second == null) {
+                status = null
+                restoredCount = outcome.first
+            } else {
+                status = outcome.second
+            }
         }
     }
 
@@ -818,7 +897,7 @@ fun BackupSection(modifier: Modifier = Modifier) {
     val restorePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) pendingRestore = uri
+        if (uri != null) pendingRestoreText = uri.toString()
     }
 
     val titleText = tr("پشتیبان‌گیری و بازیابی", "Backup & restore", "النسخ الاحتياطي والاستعادة")
@@ -968,23 +1047,38 @@ fun BackupSection(modifier: Modifier = Modifier) {
         }
     }
 
-    pendingRestore?.let { uri ->
+    // تأیید قبل از بازیابی
+    pendingRestoreText?.let { text ->
+        val uri = Uri.parse(text)
         AlertDialog(
-            onDismissRequest = { pendingRestore = null },
+            onDismissRequest = { pendingRestoreText = null },
             title = { Text(dialogTitle) },
             text = { Text(dialogText) },
             confirmButton = {
                 TextButton(onClick = {
-                    val u = uri
-                    pendingRestore = null
-                    doRestore(u)
+                    pendingRestoreText = null
+                    doRestore(uri)
                 }) {
                     Text(btnConfirm)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingRestore = null }) {
+                TextButton(onClick = { pendingRestoreText = null }) {
                     Text(btnCancel)
+                }
+            }
+        )
+    }
+
+    // بعد از بازیابی موفق: برنامه دوباره شروع می‌شود تا داده‌های تازه دیده شوند
+    restoredCount?.let { n ->
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(msgRestoredTitle) },
+            text = { Text("$msgRestored ($n)") },
+            confirmButton = {
+                TextButton(onClick = { restartApp(ctx) }) {
+                    Text(btnRestart)
                 }
             }
         )
