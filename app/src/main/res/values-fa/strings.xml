@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">حسابیار</string>
+
+    <string name="tab_ledger">حسابداری</string>
+    <string name="tab_store">کالاها و گزارش</string>
+    <string name="tab_settings">تنظیمات</string>
+
+    <string name="balance">موجودی</string>
+    <string name="income">درآمد</string>
+    <string name="expense">هزینه</string>
+    <string name="add_transaction">ثبت تراکنش جدید</string>
+    <string name="description">توضیح</string>
+    <string name="amount">مبلغ</string>
+    <string name="currency">تومان</string>
+    <string name="add">افزودن</string>
+    <string name="save">ذخیره</string>
+    <string name="cancel">لغو</string>
+    <string name="delete">حذف</string>
+    <string name="edit">ویرایش</string>
+    <string name="transactions">تراکنش‌ها</string>
+    <string name="no_transactions">هنوز تراکنشی ثبت نشده است.</string>
+
+    <string name="err_title">لطفاً توضیح را وارد کنید</string>
+    <string name="err_amount">مبلغ معتبر وارد کنید</string>
+    <string name="err_name">لطفاً نام کالا را وارد کنید</string>
+    <string name="err_qty">تعداد معتبر وارد کنید</string>
+    <string name="err_stock">موجودی کافی نیست</string>
+
+    <string name="products">کالاها</string>
+    <string name="reports">گزارش‌ها</string>
+    <string name="add_product">افزودن کالا</string>
+    <string name="search">جستجو با نام یا کد</string>
+    <string name="product_new">کالای جدید</string>
+    <string name="product_edit">ویرایش کالا</string>
+    <string name="product_name">نام کالا</string>
+    <string name="product_code">کد کالا (اختیاری)</string>
+    <string name="product_price">قیمت</string>
+    <string name="product_stock">موجودی</string>
+    <string name="sell">فروش</string>
+    <string name="sell_qty">تعداد</string>
+    <string name="stock">موجودی</string>
+    <string name="low_stock">کم‌موجودی</string>
+    <string name="no_products">هنوز کالایی ثبت نشده است.</string>
+
+    <string name="period_daily">روزانه</string>
+    <string name="period_weekly">هفتگی</string>
+    <string name="period_monthly">ماهانه</string>
+    <string name="period_yearly">سالانه</string>
+    <string name="report_income">درآمد</string>
+    <string name="report_expense">هزینه</string>
+    <string name="report_net">خالص</string>
+    <string name="report_sales">تعداد فروش</string>
+    <string name="range_format">از %1$s تا %2$s</string>
+
+    <string name="language">زبان</string>
+    <string name="fiscal_calendar">تقویم سال مالی</string>
+    <string name="fiscal_hint">برای گزارش سالانه استفاده می‌شود</string>
+    <string name="cal_persian">شمسی</string>
+    <string name="cal_hijri">قمری</string>
+    <string name="cal_gregorian">میلادی</string>
+    <string name="source_device">گوشی</string>
+    <string name="btn_to_device">گوشی</string>
+    <string name="btn_to_region">منطقه</string>
+
+    <string name="cat_salary">حقوق</string>
+    <string name="cat_sale">فروش</string>
+    <string name="cat_gift">هدیه</string>
+    <string name="cat_other_income">سایر درآمدها</string>
+    <string name="cat_food">خوراک</string>
+    <string name="cat_transport">حمل‌ونقل</string>
+    <string name="cat_bill">قبض</string>
+    <string name="cat_shopping">خرید</string>
+    <string name="cat_entertainment">تفریح</string>
+    <string name="cat_health">سلامت</string>
+    <string name="cat_other_expense">سایر هزینه‌ها</string>
+</resources>
