@@ -1,4 +1,77 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">حسابیار</string>
+    <string name="app_name">Hesabyar</string>
+
+    <string name="tab_ledger">Ledger</string>
+    <string name="tab_store">Store</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="balance">Balance</string>
+    <string name="income">Income</string>
+    <string name="expense">Expense</string>
+    <string name="add_transaction">New transaction</string>
+    <string name="description">Description</string>
+    <string name="amount">Amount</string>
+    <string name="currency">Toman</string>
+    <string name="add">Add</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete">Delete</string>
+    <string name="edit">Edit</string>
+    <string name="transactions">Transactions</string>
+    <string name="no_transactions">No transactions yet.</string>
+
+    <string name="err_title">Please enter a description</string>
+    <string name="err_amount">Enter a valid amount</string>
+    <string name="err_name">Please enter a name</string>
+    <string name="err_qty">Enter a valid quantity</string>
+    <string name="err_stock">Not enough stock</string>
+
+    <string name="products">Products</string>
+    <string name="reports">Reports</string>
+    <string name="add_product">Add product</string>
+    <string name="search">Search by name or code</string>
+    <string name="product_new">New product</string>
+    <string name="product_edit">Edit product</string>
+    <string name="product_name">Product name</string>
+    <string name="product_code">Code (optional)</string>
+    <string name="product_price">Price</string>
+    <string name="product_stock">Stock quantity</string>
+    <string name="sell">Sell</string>
+    <string name="sell_qty">Quantity</string>
+    <string name="stock">Stock</string>
+    <string name="low_stock">Low stock</string>
+    <string name="no_products">No products yet.</string>
+
+    <string name="period_daily">Daily</string>
+    <string name="period_weekly">Weekly</string>
+    <string name="period_monthly">Monthly</string>
+    <string name="period_yearly">Yearly</string>
+    <string name="report_income">Income</string>
+    <string name="report_expense">Expense</string>
+    <string name="report_net">Net</string>
+    <string name="report_sales">Number of sales</string>
+    <string name="range_format">From %1$s to %2$s</string>
+
+    <string name="language">Language</string>
+    <string name="fiscal_calendar">Fiscal year calendar</string>
+    <string name="fiscal_hint">Used for the yearly report</string>
+    <string name="cal_persian">Solar Hijri (Persian)</string>
+    <string name="cal_hijri">Hijri (Islamic)</string>
+    <string name="cal_gregorian">Gregorian</string>
+    <string name="source_device">Phone</string>
+    <string name="btn_to_device">Phone</string>
+    <string name="btn_to_region">Region</string>
+
+    <string name="cat_salary">Salary</string>
+    <string name="cat_sale">Sale</string>
+    <string name="cat_gift">Gift</string>
+    <string name="cat_other_income">Other income</string>
+    <string name="cat_food">Food</string>
+    <string name="cat_transport">Transport</string>
+    <string name="cat_bill">Bills</string>
+    <string name="cat_shopping">Shopping</string>
+    <string name="cat_entertainment">Entertainment</string>
+    <string name="cat_health">Health</string>
+    <string name="cat_other_expense">Other expenses</string>
 </resources>
