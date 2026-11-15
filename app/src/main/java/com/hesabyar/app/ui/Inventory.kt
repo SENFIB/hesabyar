@@ -8,7 +8,6 @@ import android.database.sqlite.SQLiteOpenHelper
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -40,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -56,7 +56,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 // ---------- Models ----------
@@ -85,44 +87,48 @@ data class SaleRecord(
 
 // ---------- Database ----------
 
-private class InvDbHelper(ctx: Context) : SQLiteOpenHelper(ctx, "hesabyar_inventory.db", null, 2) {
-    override fun onCreate(db: SQLiteDatabase) = createTables(db)
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = createTables(db)
-    override fun onOpen(db: SQLiteDatabase) {
-        super.onOpen(db)
+private const val INV_DB_VERSION = 3
+
+private class InvDbHelper(ctx: Context) :
+    SQLiteOpenHelper(ctx, "hesabyar_inventory.db", null, INV_DB_VERSION) {
+
+    override fun onCreate(db: SQLiteDatabase) {
+        createTables(db)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         createTables(db)
     }
 }
 
 private fun createTables(db: SQLiteDatabase) {
     db.execSQL(
-        """CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            code TEXT,
-            price INTEGER NOT NULL DEFAULT 0,
-            stock INTEGER NOT NULL DEFAULT 0,
-            threshold INTEGER NOT NULL DEFAULT 0,
-            image_path TEXT
-        )"""
+        "CREATE TABLE IF NOT EXISTS items (" +
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+            "name TEXT NOT NULL, " +
+            "description TEXT, " +
+            "code TEXT, " +
+            "price INTEGER NOT NULL DEFAULT 0, " +
+            "stock INTEGER NOT NULL DEFAULT 0, " +
+            "threshold INTEGER NOT NULL DEFAULT 0, " +
+            "image_path TEXT)"
     )
-    // Adds the photo column to databases created by earlier versions. If it already exists, this does nothing.
+    // برای دیتابیس‌های قدیمی که ستون عکس ندارند
     try {
         db.execSQL("ALTER TABLE items ADD COLUMN image_path TEXT")
     } catch (e: Exception) {
+        // ستون از قبل وجود دارد
     }
     db.execSQL(
-        """CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id INTEGER NOT NULL,
-            item_name TEXT NOT NULL,
-            image_path TEXT,
-            qty INTEGER NOT NULL,
-            unit_price INTEGER NOT NULL,
-            total INTEGER NOT NULL,
-            date_millis INTEGER NOT NULL
-        )"""
+        "CREATE TABLE IF NOT EXISTS sales (" +
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+            "item_id INTEGER NOT NULL, " +
+            "item_name TEXT NOT NULL, " +
+            "image_path TEXT, " +
+            "qty INTEGER NOT NULL, " +
+            "unit_price INTEGER NOT NULL, " +
+            "total INTEGER NOT NULL, " +
+            "date_millis INTEGER NOT NULL)"
     )
 }
 
@@ -198,7 +204,7 @@ object InvStore {
         item.imagePath?.let { File(it).delete() }
     }
 
-    // Reduces stock and records the sale. Returns false if stock is not enough.
+    // موجودی را کم می‌کند و فروش را ثبت می‌کند. اگر موجودی کافی نباشد false برمی‌گرداند.
     fun sell(ctx: Context, item: InvItem, qty: Int, unitPrice: Long, dateMillis: Long): Boolean {
         val d = db(ctx)
         d.beginTransaction()
@@ -210,7 +216,7 @@ object InvStore {
             if (qty <= 0 || current < qty) return false
 
             d.execSQL("UPDATE items SET stock = stock - ? WHERE id = ?", arrayOf<Any>(qty, item.id))
-            d.insertOrThrow("sales", null, ContentValues().apply {
+            val cv = ContentValues().apply {
                 put("item_id", item.id)
                 put("item_name", item.name)
                 put("image_path", item.imagePath)
@@ -218,7 +224,8 @@ object InvStore {
                 put("unit_price", unitPrice)
                 put("total", unitPrice * qty)
                 put("date_millis", dateMillis)
-            })
+            }
+            d.insertOrThrow("sales", null, cv)
             d.setTransactionSuccessful()
             return true
         } finally {
@@ -229,13 +236,14 @@ object InvStore {
 
 // ---------- Helpers ----------
 
+// عکس انتخاب‌شده را داخل حافظه خصوصی برنامه کپی می‌کند
 private fun copyImageToApp(ctx: Context, uri: Uri): String? {
     return try {
-        val dir = File(ctx.filesDir, "inv_images").apply { mkdirs() }
-        val out = File(dir, "item_${System.currentTimeMillis()}.jpg")
-        ctx.contentResolver.openInputStream(uri)?.use { input ->
-            out.outputStream().use { input.copyTo(it) }
-        } ?: return null
+        val dir = File(ctx.filesDir, "inv_images")
+        dir.mkdirs()
+        val out = File(dir, "item_" + System.currentTimeMillis() + ".jpg")
+        val input = ctx.contentResolver.openInputStream(uri) ?: return null
+        input.use { src -> out.outputStream().use { dst -> src.copyTo(dst) } }
         out.absolutePath
     } catch (e: Exception) {
         null
@@ -247,9 +255,11 @@ private fun decodeThumb(path: String): ImageBitmap? {
     return BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
 }
 
-// Stock levels, T = alert level set by the user
-// 0 = green (more than 3T), 1 = orange (more than 2T up to 3T),
-// 2 = red (more than T up to 2T), 3 = purple (T or less)
+// سطح موجودی، T = حد هشدار که کاربر تعیین می‌کند
+// 0 سبز: بیش از ۳T
+// 1 نارنجی: بیش از ۲T تا ۳T
+// 2 قرمز: بیش از T تا ۲T
+// 3 بنفش: T یا کمتر
 private fun invLevel(stock: Int, t: Int): Int = when {
     stock > 3 * t -> 0
     stock > 2 * t -> 1
@@ -273,14 +283,14 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    var items by remember { mutableStateOf(InvStore.all(ctx)) }
+    var stockItems by remember { mutableStateOf(InvStore.all(ctx)) }
     var sales by remember { mutableStateOf(InvStore.salesAll(ctx)) }
-    var view by remember { mutableStateOf(0) } // 0 = items, 1 = sales report
+    var view by remember { mutableStateOf(0) } // ۰ = کالاها، ۱ = گزارش فروش
     var query by remember { mutableStateOf("") }
     var sellTarget by remember { mutableStateOf<InvItem?>(null) }
     var deleteTarget by remember { mutableStateOf<InvItem?>(null) }
 
-    // Form state
+    // وضعیت فرم
     var editId by remember { mutableStateOf(0L) }
     var fName by remember { mutableStateOf("") }
     var fDesc by remember { mutableStateOf("") }
@@ -292,13 +302,14 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     var fOriginalImage by remember { mutableStateOf<String?>(null) }
     var triedSave by remember { mutableStateOf(false) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            copyImageToApp(ctx, uri)?.let { fImage = it }
+            val path = copyImageToApp(ctx, uri)
+            if (path != null) fImage = path
         }
     }
 
-    // One-time migration of old products into the inventory
+    // انتقال یک‌باره کالاهای قدیمی به این بخش
     LaunchedEffect(Unit) {
         if (!prefs.getBoolean("migrated", false)) {
             vm.products.value.forEach { p ->
@@ -316,12 +327,12 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 )
             }
             prefs.edit().putBoolean("migrated", true).apply()
-            items = InvStore.all(ctx)
+            stockItems = InvStore.all(ctx)
         }
     }
 
     fun reload() {
-        items = InvStore.all(ctx)
+        stockItems = InvStore.all(ctx)
         sales = InvStore.salesAll(ctx)
     }
 
@@ -352,7 +363,7 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         scope.launch { listState.animateScrollToItem(0) }
     }
 
-    // All texts are built here, not inside callbacks
+    // همه متن‌ها فقط اینجا ساخته می‌شوند، نه داخل callbackها
     val tItemsTab = tr("کالاها", "Items", "المنتجات")
     val tSalesTab = tr("گزارش فروش", "Sales report", "تقرير المبيعات")
     val tNew = tr("ثبت کالای جدید", "Add new item", "إضافة منتج جديد")
@@ -385,28 +396,40 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     val tSearchNone = tr("کالایی با این مشخصات پیدا نشد", "No item matches", "لا يوجد منتج مطابق")
 
     val q = query.trim().lowercase()
-    val shown = if (q.isEmpty()) items else items.filter {
-        it.name.lowercase().contains(q) || it.code.lowercase().contains(q)
+    val shown = if (q.isEmpty()) {
+        stockItems
+    } else {
+        stockItems.filter { it.name.lowercase().contains(q) || it.code.lowercase().contains(q) }
     }
-    val totalValue = items.sumOf { it.price * it.stock }
-    val criticalCount = items.count { it.threshold > 0 && it.stock <= it.threshold }
+    val totalValue = stockItems.sumOf { it.price * it.stock }
+    val criticalCount = stockItems.count { it.threshold > 0 && it.stock <= it.threshold }
     val salesTotal = sales.sumOf { it.total }
     val soldUnits = sales.sumOf { it.qty }
     val topSellers = sales
         .groupBy { it.itemName }
-        .map { (name, list) -> name to list.sumOf { it.qty } }
+        .map { entry -> Pair(entry.key, entry.value.sumOf { it.qty }) }
         .sortedByDescending { it.second }
         .take(5)
 
-    // Sell dialog
-    sellTarget?.let { target ->
+    val countText = stockItems.size.toString()
+    val totalValueText = formatMoney(totalValue)
+    val criticalText = criticalCount.toString()
+    val salesCountText = sales.size.toString()
+    val salesTotalText = formatMoney(salesTotal)
+    val soldUnitsText = soldUnits.toString()
+
+    // دیالوگ فروش
+    val target = sellTarget
+    if (target != null) {
         SellDialog(
             item = target,
             onDismiss = { sellTarget = null },
             onConfirm = { qty, unitPrice ->
                 val now = System.currentTimeMillis()
-                if (InvStore.sell(ctx, target, qty, unitPrice, now)) {
-                    vm.addTransaction("${target.name} × $qty", unitPrice * qty, true, "sale")
+                val ok = InvStore.sell(ctx, target, qty, unitPrice, now)
+                if (ok) {
+                    val title = target.name + " × " + qty.toString()
+                    vm.addTransaction(title, unitPrice * qty, true, "sale")
                     reload()
                 }
                 sellTarget = null
@@ -414,16 +437,17 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         )
     }
 
-    // Delete dialog
-    deleteTarget?.let { target ->
+    // دیالوگ حذف
+    val delTarget = deleteTarget
+    if (delTarget != null) {
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text(tDeleteAsk) },
-            text = { Text(target.name) },
+            text = { Text(delTarget.name) },
             confirmButton = {
                 Button(onClick = {
-                    InvStore.delete(ctx, target)
-                    if (editId == target.id) resetForm()
+                    InvStore.delete(ctx, delTarget)
+                    if (editId == delTarget.id) resetForm()
                     deleteTarget = null
                     reload()
                 }) { Text(tDelete) }
@@ -456,7 +480,7 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         }
 
         if (view == 0) {
-            // Add / edit form
+            // فرم ثبت و ویرایش
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -473,13 +497,13 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                         ) {
                             ProductImage(path = fImage, size = 96.dp)
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = {
-                                    picker.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                }) { Text(tPickPhoto) }
+                                OutlinedButton(onClick = { picker.launch("image/*") }) {
+                                    Text(tPickPhoto)
+                                }
                                 if (fImage != null) {
-                                    TextButton(onClick = { fImage = null }) { Text(tRemovePhoto) }
+                                    TextButton(onClick = { fImage = null }) {
+                                        Text(tRemovePhoto)
+                                    }
                                 }
                             }
                         }
@@ -551,12 +575,14 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                                             imagePath = fImage
                                         )
                                     )
-                                    // Remove the old photo if it was replaced
+                                    // اگر عکس عوض شد، عکس قبلی پاک شود
                                     if (orig != null && orig != fImage) File(orig).delete()
                                     resetForm()
                                     reload()
                                 }
-                            }) { Text(if (editId == 0L) tSave else tUpdate) }
+                            }) {
+                                Text(if (editId == 0L) tSave else tUpdate)
+                            }
 
                             if (editId != 0L) {
                                 OutlinedButton(onClick = { resetForm() }) { Text(tCancel) }
@@ -566,18 +592,21 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 }
             }
 
-            // Totals
+            // جمع‌ها
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("$tCount: ${items.size}")
-                        Text("$tTotalValue: ${formatMoney(totalValue)}", fontWeight = FontWeight.Bold)
-                        Text("$tCritical: $criticalCount")
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(tCount + ": " + countText)
+                        Text(tTotalValue + ": " + totalValueText, fontWeight = FontWeight.Bold)
+                        Text(tCritical + ": " + criticalText)
                     }
                 }
             }
 
-            // Legend
+            // راهنمای رنگ‌ها
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -586,7 +615,7 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 }
             }
 
-            // Search
+            // جست‌وجو
             item {
                 OutlinedTextField(
                     value = query,
@@ -597,7 +626,7 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 )
             }
 
-            if (items.isEmpty()) {
+            if (stockItems.isEmpty()) {
                 item { Text(tEmpty) }
             } else if (shown.isEmpty()) {
                 item { Text(tSearchNone) }
@@ -612,13 +641,16 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 )
             }
         } else {
-            // Sales report
+            // گزارش فروش
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("$tSalesCount: ${sales.size}")
-                        Text("$tSalesTotal: ${formatMoney(salesTotal)}", fontWeight = FontWeight.Bold)
-                        Text("$tSoldUnits: $soldUnits")
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(tSalesCount + ": " + salesCountText)
+                        Text(tSalesTotal + ": " + salesTotalText, fontWeight = FontWeight.Bold)
+                        Text(tSoldUnits + ": " + soldUnitsText)
                     }
                 }
             }
@@ -626,4 +658,241 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
             if (topSellers.isNotEmpty()) {
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = 
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(tTop, fontWeight = FontWeight.Bold)
+                            topSellers.forEach { pair ->
+                                Text(pair.first + ": " + pair.second.toString() + " " + tUnits)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (sales.isEmpty()) {
+                item { Text(tNoSales) }
+            }
+
+            items(sales, key = { it.id }) { sale ->
+                SaleRow(sale = sale, regionType = regionType)
+            }
+        }
+    }
+}
+
+// ---------- قسمت‌های کوچک ----------
+
+@Composable
+private fun ProductImage(path: String?, size: Dp) {
+    val bmp by produceState<ImageBitmap?>(initialValue = null, key1 = path) {
+        value = if (path == null) null else withContext(Dispatchers.IO) { decodeThumb(path) }
+    }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        val shownBmp = bmp
+        if (shownBmp != null) {
+            Image(
+                bitmap = shownBmp,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text("—", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun InvLabel(level: Int): String = when (level) {
+    0 -> tr("موجود", "In stock", "متوفر")
+    1 -> tr("رو به کاهش", "Decreasing", "في انخفاض")
+    2 -> tr("کم", "Low", "منخفض")
+    else -> tr("بحرانی", "Critical", "حرج")
+}
+
+@Composable
+private fun InvLegend() {
+    val l0 = tr("بیشتر از ۳ برابر حد هشدار", "More than 3× the alert level", "أكثر من 3 أضعاف حد التنبيه")
+    val l1 = tr("بیشتر از ۲ تا ۳ برابر حد هشدار", "2× to 3× the alert level", "من ضعفين إلى 3 أضعاف الحد")
+    val l2 = tr("بیشتر از حد هشدار تا ۲ برابر", "Above alert level up to 2×", "أعلى من الحد حتى ضعفين")
+    val l3 = tr("برابر حد هشدار یا کمتر", "At or below alert level", "عند حد التنبيه أو أقل")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LegendRow(Color(0xFF2E7D32), l0)
+        LegendRow(Color(0xFFEF6C00), l1)
+        LegendRow(Color(0xFFD32F2F), l2)
+        LegendRow(Color(0xFF7B1FA2), l3)
+    }
+}
+
+@Composable
+private fun LegendRow(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .background(color, RoundedCornerShape(6.dp))
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun InvCard(
+    item: InvItem,
+    onSell: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val level = invLevel(item.stock, item.threshold)
+    val levelColor = invColorOf(level)
+    val label = InvLabel(level)
+    val tCode = tr("کد", "Code", "الرمز")
+    val tPrice = tr("قیمت", "Price", "السعر")
+    val tStock = tr("موجودی", "Stock", "المخزون")
+    val tSell = tr("فروش", "Sell", "بيع")
+    val tEdit = tr("ویرایش", "Edit", "تعديل")
+    val tDelete = tr("حذف", "Delete", "حذف")
+    val priceText = formatMoney(item.price)
+    val stockText = item.stock.toString()
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProductImage(path = item.imagePath, size = 72.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(item.name, fontWeight = FontWeight.Bold)
+                if (item.code.isNotBlank()) {
+                    Text(tCode + ": " + item.code, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(tPrice + ": " + priceText)
+                Text(
+                    tStock + ": " + stockText + "  ·  " + label,
+                    color = levelColor,
+                    fontWeight = FontWeight.Bold
+                )
+                if (item.description.isNotBlank()) {
+                    Text(
+                        item.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = onSell) { Text(tSell) }
+                    OutlinedButton(onClick = onEdit) { Text(tEdit) }
+                    TextButton(onClick = onDelete) {
+                        Text(tDelete, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaleRow(sale: SaleRecord, regionType: CalendarType) {
+    val dateText = formatWith(sale.dateMillis, "yyyy/MM/dd HH:mm", deviceLocale(), regionType.timeZone)
+    val unitText = formatMoney(sale.unitPrice)
+    val totalText = formatMoney(sale.total)
+    val qtyText = sale.qty.toString()
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProductImage(path = sale.imagePath, size = 48.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(sale.itemName, fontWeight = FontWeight.Bold)
+                Text(
+                    qtyText + " × " + unitText + " = " + totalText,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(dateText, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SellDialog(
+    item: InvItem,
+    onDismiss: () -> Unit,
+    onConfirm: (Int, Long) -> Unit
+) {
+    var qtyText by remember { mutableStateOf("1") }
+    var priceText by remember { mutableStateOf(item.price.toString()) }
+
+    val qty = qtyText.toIntOrNull() ?: 0
+    val unit = priceText.toLongOrNull() ?: 0L
+    val tooMany = qty > item.stock
+    val invalid = qty <= 0 || tooMany
+
+    val totalText = formatMoney(unit * qty)
+    val stockText = item.stock.toString()
+    val itemName = item.name
+
+    val tTitle = tr("فروش " + itemName, "Sell " + itemName, "بيع " + itemName)
+    val tStockInfo = tr("موجودی فعلی: " + stockText, "Current stock: " + stockText, "المخزون الحالي: " + stockText)
+    val tQty = tr("تعداد فروش", "Quantity", "الكمية")
+    val tUnit = tr("قیمت فروش واحد", "Unit sale price", "سعر البيع للوحدة")
+    val tTotal = tr("جمع فروش: " + totalText, "Total: " + totalText, "الإجمالي: " + totalText)
+    val tNotEnough = tr("موجودی کافی نیست", "Not enough stock", "المخزون غير كافٍ")
+    val tConfirm = tr("ثبت فروش", "Record sale", "تسجيل البيع")
+    val tCancel = tr("انصراف", "Cancel", "إلغاء")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tTitle) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tStockInfo)
+                OutlinedTextField(
+                    value = qtyText,
+                    onValueChange = { qtyText = digitsOnly(it) },
+                    label = { Text(tQty) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = digitsOnly(it) },
+                    label = { Text(tUnit) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(tTotal, fontWeight = FontWeight.Bold)
+                if (tooMany) {
+                    Text(tNotEnough, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(qty, unit) },
+                enabled = !invalid
+            ) { Text(tConfirm) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(tCancel) }
+        }
+    )
+}
