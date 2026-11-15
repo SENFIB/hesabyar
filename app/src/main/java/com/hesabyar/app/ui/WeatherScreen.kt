@@ -1,250 +1,258 @@
 package com.hesabyar.app.ui
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.pm.PackageManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
-import android.os.Bundle
-import android.os.Looper
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
-import com.hesabyar.app.MainActivity
-import kotlinx.coroutines.Dispatchers
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
-import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
-data class DayForecast(val dateMillis: Long, val min: Double, val max: Double, val code: Int)
+@Composable
+fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
+    val context = LocalContext.current
+    val lang = currentLang()
+    val scope = rememberCoroutineScope()
+    val state = WeatherStore.state
 
-data class WeatherInfo(val current: Double, val code: Int, val days: List<DayForecast>)
+    var showManual by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
 
-sealed interface WeatherState {
-    data object None : WeatherState
-    data object Loading : WeatherState
-    data object Error : WeatherState
-    data class Ok(val place: String, val info: WeatherInfo) : WeatherState
-}
-
-// وضعیت آب‌وهوا در کل برنامه (هدر و تب آب‌وهوا از همین استفاده می‌کنند)
-object WeatherStore {
-    private const val PREFS = "hesabyar_weather"
-
-    var state: WeatherState by mutableStateOf<WeatherState>(WeatherState.None)
-        private set
-
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    fun hasLocation(ctx: Context): Boolean = prefs(ctx).contains("lat")
-
-    fun savedPlace(ctx: Context): String? = prefs(ctx).getString("place", null)
-
-    private fun save(ctx: Context, lat: Double, lon: Double, place: String) {
-        prefs(ctx).edit()
-            .putString("lat", lat.toString())
-            .putString("lon", lon.toString())
-            .putString("place", place)
-            .apply()
-    }
-
-    suspend fun refresh(ctx: Context) {
-        val p = prefs(ctx)
-        val lat = p.getString("lat", null)?.toDoubleOrNull()
-        val lon = p.getString("lon", null)?.toDoubleOrNull()
-        val place = p.getString("place", null) ?: ""
-        if (lat == null || lon == null) {
-            state = WeatherState.None
-            return
-        }
-        state = WeatherState.Loading
-        state = try {
-            val info = withContext(Dispatchers.IO) { fetchWeather(lat, lon) }
-            WeatherState.Ok(place, info)
-        } catch (e: Exception) {
-            WeatherState.Error
-        }
-    }
-
-    // نام شهر را وارد می‌کند؛ اگر پیدا شد ذخیره و آب‌وهوا گرفته می‌شود
-    suspend fun setManual(ctx: Context, query: String, lang: String): Boolean {
-        val found = withContext(Dispatchers.IO) { geocode(query, lang) } ?: return false
-        save(ctx, found.lat, found.lon, found.name)
-        refresh(ctx)
-        return true
-    }
-
-    // موقعیت GPS را می‌گیرد؛ اگر نشد false برمی‌گرداند
-    suspend fun useGps(ctx: Context, label: String): Boolean {
-        val loc = LocationHelper.current(ctx) ?: return false
-        save(ctx, loc.latitude, loc.longitude, label)
-        refresh(ctx)
-        return true
-    }
-}
-
-private data class GeoPlace(val name: String, val lat: Double, val lon: Double)
-
-private fun geocode(query: String, lang: String): GeoPlace? {
-    return runCatching { geocodeOnce(query, lang) }.getOrNull()
-        ?: runCatching { geocodeOnce(query, "en") }.getOrNull()
-}
-
-private fun geocodeOnce(query: String, lang: String): GeoPlace? {
-    val encoded = URLEncoder.encode(query, "UTF-8")
-    val url = URL(
-        "https://geocoding-api.open-meteo.com/v1/search?name=$encoded&count=1&language=$lang&format=json"
+    val gpsLabel = tr("موقعیت من", "My location", "موقعي")
+    val gpsFail = tr(
+        "GPS فعال نیست یا اجازه داده نشد. شهر را دستی وارد کنید.",
+        "GPS is off or permission was denied. Enter the city manually.",
+        "GPS غير مفعّل أو لم يُسمح به. أدخل المدينة يدوياً."
     )
-    val json = JSONObject(readUrl(url))
-    val results = json.optJSONArray("results") ?: return null
-    if (results.length() == 0) return null
-    val r = results.getJSONObject(0)
-    return GeoPlace(r.getString("name"), r.getDouble("latitude"), r.getDouble("longitude"))
-}
-
-private fun readUrl(url: URL): String {
-    val conn = url.openConnection() as HttpURLConnection
-    try {
-        conn.connectTimeout = 10_000
-        conn.readTimeout = 10_000
-        return conn.inputStream.bufferedReader().use { it.readText() }
-    } finally {
-        conn.disconnect()
-    }
-}
-
-private fun fetchWeather(lat: Double, lon: Double): WeatherInfo {
-    val url = URL(
-        "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
-            "&current=temperature_2m,weather_code" +
-            "&daily=temperature_2m_max,temperature_2m_min,weather_code" +
-            "&timezone=auto&forecast_days=5"
+    val noLocation = tr(
+        "موقعیت تنظیم نشده است.",
+        "Location is not set.",
+        "لم يتم تحديد الموقع."
     )
-    val json = JSONObject(readUrl(url))
-    val cur = json.getJSONObject("current")
-    val daily = json.getJSONObject("daily")
-    val times = daily.getJSONArray("time")
-    val maxs = daily.getJSONArray("temperature_2m_max")
-    val mins = daily.getJSONArray("temperature_2m_min")
-    val codes = daily.getJSONArray("weather_code")
+    val loadingText = tr("در حال دریافت...", "Loading...", "جارٍ التحميل...")
+    val errorText = tr(
+        "دریافت آب و هوا انجام نشد. اینترنت را بررسی کنید و دوباره تلاش کنید.",
+        "Could not load weather. Check your internet and try again.",
+        "تعذّر جلب الطقس. تحقق من الإنترنت وحاول مجدداً."
+    )
 
-    val parser = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
-    val days = (0 until times.length()).map { i ->
-        DayForecast(
-            dateMillis = parser.parse(times.getString(i))?.time ?: 0L,
-            min = mins.getDouble(i),
-            max = maxs.getDouble(i),
-            code = codes.getInt(i)
-        )
-    }
-    return WeatherInfo(cur.getDouble("temperature_2m"), cur.getInt("weather_code"), days)
-}
-
-// متن وضعیت هوا بر اساس کد WMO
-fun conditionText(code: Int, lang: String): String {
-    val (icon, fa, en, ar) = when (code) {
-        0 -> listOf("☀", "آفتابی", "Clear", "صافٍ")
-        1, 2 -> listOf("🌤", "نیمه‌ابری", "Partly cloudy", "غائم جزئياً")
-        3 -> listOf("☁", "ابری", "Overcast", "غائم")
-        45, 48 -> listOf("🌫", "مه", "Fog", "ضباب")
-        51, 53, 55, 56, 57 -> listOf("🌦", "نم‌نم باران", "Drizzle", "رذاذ")
-        61, 63, 65, 66, 67, 80, 81, 82 -> listOf("🌧", "بارانی", "Rain", "ممطر")
-        71, 73, 75, 77, 85, 86 -> listOf("❄", "برفی", "Snow", "ثلجي")
-        95, 96, 99 -> listOf("⛈", "طوفان رعدوبرقی", "Thunderstorm", "عاصفة رعدية")
-        else -> listOf("•", "نامشخص", "Unknown", "غير معروف")
-    }
-    val label = when (lang) {
-        "fa" -> fa
-        "ar" -> ar
-        else -> en
-    }
-    return "$icon $label"
-}
-
-// ---------- موقعیت GPS ----------
-
-object LocationHelper {
-    fun hasPermission(ctx: Context): Boolean {
-        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
+    val gps = rememberGpsAction(gpsLabel) { ok ->
+        message = if (ok) null else gpsFail
     }
 
-    @SuppressLint("MissingPermission")
-    suspend fun current(ctx: Context): Location? {
-        if (!hasPermission(ctx)) return null
-        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val provider = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-            .firstOrNull { lm.isProviderEnabled(it) } ?: return null
-
-        val fresh = withTimeoutOrNull(30_000L) {
-            suspendCancellableCoroutine<Location?> { cont ->
-                val listener = object : LocationListener {
-                    override fun onLocationChanged(location: Location) {
-                        lm.removeUpdates(this)
-                        if (cont.isActive) cont.resume(location)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        when (val s = state) {
+            WeatherState.None -> Text(noLocation)
+            WeatherState.Loading -> Text(loadingText)
+            WeatherState.Error -> Text(errorText, color = MaterialTheme.colorScheme.error)
+            is WeatherState.Ok -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(s.place, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            tr("دمای فعلی", "Current temperature", "درجة الحرارة الآن"),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            text = "${s.info.current.roundToInt()}°",
+                            style = MaterialTheme.typography.displayMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = conditionText(s.info.code, lang),
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     }
-
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onProviderDisabled(provider: String) {}
-                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
                 }
-                lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
-                cont.invokeOnCancellation { lm.removeUpdates(listener) }
+
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            tr("پیش‌بینی ۵ روز", "5-day forecast", "توقعات 5 أيام"),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        s.info.days.forEach { day ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = formatWith(
+                                            day.dateMillis,
+                                            "EEEE, yyyy/MM/dd",
+                                            regionType.locale,
+                                            regionType.timeZone
+                                        ),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        text = conditionText(day.code, lang),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                Text(
+                                    text = "${day.min.roundToInt()}° / ${day.max.roundToInt()}°",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
-        return fresh ?: lm.getLastKnownLocation(provider)
+
+        Button(onClick = gps, modifier = Modifier.fillMaxWidth()) {
+            Text(tr("استفاده از موقعیت من (GPS)", "Use my location (GPS)", "استخدام موقعي (GPS)"))
+        }
+        OutlinedButton(onClick = { showManual = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(tr("ورود دستی نام شهر", "Enter city name", "إدخال اسم المدينة"))
+        }
+        OutlinedButton(
+            onClick = { scope.launch { WeatherStore.refresh(context) } },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(tr("به‌روزرسانی", "Refresh", "تحديث"))
+        }
+
+        message?.let {
+            Text(it, color = MaterialTheme.colorScheme.error)
+        }
+
+        Text(
+            tr("منبع داده: Open-Meteo", "Source: Open-Meteo", "المصدر: Open-Meteo"),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+
+    if (showManual) {
+        ManualCityDialog(
+            onDismiss = { showManual = false },
+            onSaved = {
+                showManual = false
+                message = null
+            }
+        )
     }
 }
 
-// درخواست اجازه موقعیت و گرفتن GPS؛ خروجی: تابعی که با کلیک صدا زده می‌شود
+// پنجره اول اجرا: درخواست موقعیت، یا ورود دستی شهر
 @Composable
-fun rememberGpsAction(label: String, onDone: (Boolean) -> Unit): () -> Unit {
+fun LocationSetupDialog(onDone: () -> Unit) {
+    val gpsLabel = tr("موقعیت من", "My location", "موقعي")
+    var showManual by remember { mutableStateOf(false) }
+
+    val gps = rememberGpsAction(gpsLabel) { ok ->
+        if (ok) onDone() else showManual = true
+    }
+
+    if (showManual) {
+        ManualCityDialog(onDismiss = onDone, onSaved = onDone)
+    } else {
+        AlertDialog(
+            onDismissRequest = onDone,
+            title = {
+                Text(tr("موقعیت برای آب‌وهوا", "Location for weather", "الموقع للطقس"))
+            },
+            text = {
+                Text(
+                    tr(
+                        "برای نمایش دمای فعلی در بالای برنامه، موقعیت شما لازم است. با اجازه GPS خودکار پیدا می‌شود، یا می‌توانید نام شهرتان را دستی وارد کنید.",
+                        "To show the current temperature at the top, your location is needed. Allow GPS to detect it automatically, or enter your city name manually.",
+                        "لعرض درجة الحرارة الحالية أعلى الشاشة نحتاج موقعك. اسمح بـGPS للكشف التلقائي، أو أدخل اسم مدينتك يدوياً."
+                    )
+                )
+            },
+            confirmButton = {
+                Button(onClick = { gps() }) {
+                    Text(tr("اجازه GPS", "Allow GPS", "السماح بـGPS"))
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showManual = true }) {
+                        Text(tr("ورود دستی", "Enter manually", "إدخال يدوي"))
+                    }
+                    TextButton(onClick = onDone) {
+                        Text(tr("بعداً", "Later", "لاحقاً"))
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     val context = LocalContext.current
+    val lang = currentLang()
     val scope = rememberCoroutineScope()
 
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        if (result.values.any { it }) {
-            scope.launch { onDone(WeatherStore.useGps(context, label)) }
-        } else {
-            onDone(false)
-        }
-    }
+    var text by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-    return {
-        if (LocationHelper.hasPermission(context)) {
-            scope.launch { onDone(WeatherStore.useGps(context, label)) }
-        } else {
-            // نمایش پنجره اجازه باعث قفل شدن دوباره برنامه نشود
-            MainActivity.skipAutoLock = true
-            launcher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
+    val titleText = tr("نام شهر یا منطقه", "City or area name", "اسم المدينة أو المنطقة")
+    val labelText = tr("مثلاً: تهران، Dubai، الرياض", "e.g. Tehran, Dubai, Riyadh", "مثال: طهران، دبي، الرياض")
+    val notFound = tr(
+        "شهر پیدا نشد. نام را دوباره بنویسید یا اینترنت را بررسی کنید.",
+        "City not found. Check the name or your internet.",
+        "لم يتم العثور على المدينة. تحقق من الاسم أو الإنترنت."
+    )
+    val loadingText = tr("در حال جستجو...", "Searching...", "جارٍ البحث...")
+    val saveText = tr("ثبت", "Save", "حفظ")
+    val cancelText = tr("انصراف", "Cancel", "إلغاء")
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(titleText) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text(labelText) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
-            )
+                if (busy) Text(loadingText)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = text.isNotBlank() && !busy,
+                onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        val ok = WeatherStore.setManual(context, text.trim(), lang)
+                        busy = false
+                        if (ok) onSaved() else error = notFound
+                    }
+                }
+            ) {
+                Text(saveText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (!busy) onDismiss() }) {
+                Text(cancelText)
+            }
         }
-    }
+    )
 }
