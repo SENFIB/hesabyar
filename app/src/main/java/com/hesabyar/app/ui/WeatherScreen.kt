@@ -267,7 +267,9 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
 
 @Composable
 private fun ForecastRow(day: DayForecast, regionType: CalendarType, lang: String, unitF: Boolean) {
-    val dateText = formatWith(day.dateMillis, "EEEE d MMM", regionType.locale, forecastZone())
+    // تاریخ پیش‌بینی روی UTC حساب می‌شود تا روز جابه‌جا نشود
+    val utcZone = android.icu.util.TimeZone.getTimeZone("UTC")
+    val dateText = formatWith(day.dateMillis, "EEEE d MMM", regionType.locale, utcZone)
     val rangeText = "▼ " + tempText(day.min, unitF) + "  ▲ " + tempText(day.max, unitF)
     val word = conditionWord(day.code, lang)
     Card(modifier = Modifier.fillMaxWidth()) {
