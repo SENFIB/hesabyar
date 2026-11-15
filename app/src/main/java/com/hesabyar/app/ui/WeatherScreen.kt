@@ -241,7 +241,7 @@ fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
         }
         searching = true
         delay(600)
-        results = searchCities(q, lang)
+        results = searchCities(ctx, q, lang)
         searching = false
         searched = true
     }
