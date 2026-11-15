@@ -2,519 +2,853 @@ package com.hesabyar.app.ui
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import androidx.compose.foundation.layout.*
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.hesabyar.app.R
-import com.hesabyar.app.data.Category
+import com.hesabyar.app.CalendarType
+import com.hesabyar.app.MainViewModel
+import kotlinx.coroutines.launch
+import java.io.File
 
-// ================= مدل و دیتابیس انبار =================
+// ---------- Models ----------
 
 data class InvItem(
-    val id: Long,
+    val id: Long = 0L,
     val name: String,
-    val description: String,
-    val code: String,
-    val price: Long,
-    val stock: Int,
-    val threshold: Int
+    val description: String = "",
+    val code: String = "",
+    val price: Long = 0L,
+    val stock: Int = 0,
+    val threshold: Int = 0,
+    val imagePath: String? = null
 )
 
-class InvDb(ctx: Context) : SQLiteOpenHelper(ctx, "hesabyar_inventory.db", null, 1) {
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            "CREATE TABLE items (" +
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                "name TEXT NOT NULL, " +
-                "description TEXT NOT NULL, " +
-                "code TEXT NOT NULL, " +
-                "price INTEGER NOT NULL, " +
-                "stock INTEGER NOT NULL, " +
-                "threshold INTEGER NOT NULL)"
-        )
-    }
+data class SaleRecord(
+    val id: Long,
+    val itemId: Long,
+    val itemName: String,
+    val imagePath: String?,
+    val qty: Int,
+    val unitPrice: Long,
+    val total: Long,
+    val dateMillis: Long
+)
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+// ---------- Database ----------
+
+private class InvDbHelper(ctx: Context) : SQLiteOpenHelper(ctx, "hesabyar_inventory.db", null, 2) {
+    override fun onCreate(db: SQLiteDatabase) = createTables(db)
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = createTables(db)
+    override fun onOpen(db: SQLiteDatabase) {
+        super.onOpen(db)
+        createTables(db)
+    }
 }
 
+private fun createTables(db: SQLiteDatabase) {
+    db.execSQL(
+        """CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            code TEXT,
+            price INTEGER NOT NULL DEFAULT 0,
+            stock INTEGER NOT NULL DEFAULT 0,
+            threshold INTEGER NOT NULL DEFAULT 0,
+            image_path TEXT
+        )"""
+    )
+    // Adds the photo column to databases created by earlier versions. If it already exists, this does nothing.
+    try {
+        db.execSQL("ALTER TABLE items ADD COLUMN image_path TEXT")
+    } catch (e: Exception) {
+    }
+    db.execSQL(
+        """CREATE TABLE IF NOT EXISTS sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL,
+            item_name TEXT NOT NULL,
+            image_path TEXT,
+            qty INTEGER NOT NULL,
+            unit_price INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            date_millis INTEGER NOT NULL
+        )"""
+    )
+}
+
+private fun Cursor.str(col: String): String? = getString(getColumnIndexOrThrow(col))
+private fun Cursor.num(col: String): Long = getLong(getColumnIndexOrThrow(col))
+
+private fun Cursor.toItem(): InvItem = InvItem(
+    id = num("id"),
+    name = str("name") ?: "",
+    description = str("description") ?: "",
+    code = str("code") ?: "",
+    price = num("price"),
+    stock = num("stock").toInt(),
+    threshold = num("threshold").toInt(),
+    imagePath = str("image_path")?.takeIf { it.isNotBlank() }
+)
+
+private fun Cursor.toSale(): SaleRecord = SaleRecord(
+    id = num("id"),
+    itemId = num("item_id"),
+    itemName = str("item_name") ?: "",
+    imagePath = str("image_path")?.takeIf { it.isNotBlank() },
+    qty = num("qty").toInt(),
+    unitPrice = num("unit_price"),
+    total = num("total"),
+    dateMillis = num("date_millis")
+)
+
 object InvStore {
-    private var helper: InvDb? = null
+    private var helper: InvDbHelper? = null
 
     private fun db(ctx: Context): SQLiteDatabase {
-        val h = helper ?: InvDb(ctx.applicationContext).also { helper = it }
+        val h = helper ?: InvDbHelper(ctx.applicationContext).also { helper = it }
         return h.writableDatabase
     }
 
     fun all(ctx: Context): List<InvItem> {
         val out = ArrayList<InvItem>()
-        db(ctx).rawQuery(
-            "SELECT id, name, description, code, price, stock, threshold FROM items ORDER BY name",
-            null
-        ).use { c ->
-            while (c.moveToNext()) {
-                out.add(
-                    InvItem(
-                        id = c.getLong(0),
-                        name = c.getString(1) ?: "",
-                        description = c.getString(2) ?: "",
-                        code = c.getString(3) ?: "",
-                        price = c.getLong(4),
-                        stock = c.getInt(5),
-                        threshold = c.getInt(6)
-                    )
-                )
-            }
+        db(ctx).query("items", null, null, null, null, null, "name COLLATE NOCASE ASC").use { c ->
+            while (c.moveToNext()) out.add(c.toItem())
         }
         return out
     }
 
-    // id = 0 یعنی کالای جدید
-    fun save(ctx: Context, item: InvItem) {
-        val cv = ContentValues().apply {
+    fun salesAll(ctx: Context): List<SaleRecord> {
+        val out = ArrayList<SaleRecord>()
+        db(ctx).query("sales", null, null, null, null, null, "date_millis DESC").use { c ->
+            while (c.moveToNext()) out.add(c.toSale())
+        }
+        return out
+    }
+
+    fun save(ctx: Context, item: InvItem): Long {
+        val v = ContentValues().apply {
             put("name", item.name)
             put("description", item.description)
             put("code", item.code)
             put("price", item.price)
             put("stock", item.stock)
             put("threshold", item.threshold)
+            put("image_path", item.imagePath)
         }
-        if (item.id == 0L) {
-            db(ctx).insert("items", null, cv)
+        return if (item.id == 0L) {
+            db(ctx).insert("items", null, v)
         } else {
-            db(ctx).update("items", cv, "id = ?", arrayOf(item.id.toString()))
+            db(ctx).update("items", v, "id = ?", arrayOf(item.id.toString()))
+            item.id
         }
     }
 
-    fun setStock(ctx: Context, id: Long, stock: Int) {
-        val cv = ContentValues().apply { put("stock", stock) }
-        db(ctx).update("items", cv, "id = ?", arrayOf(id.toString()))
+    fun delete(ctx: Context, item: InvItem) {
+        db(ctx).delete("items", "id = ?", arrayOf(item.id.toString()))
+        item.imagePath?.let { File(it).delete() }
     }
 
-    fun delete(ctx: Context, id: Long) {
-        db(ctx).delete("items", "id = ?", arrayOf(id.toString()))
+    // Reduces stock and records the sale. Returns false if stock is not enough.
+    fun sell(ctx: Context, item: InvItem, qty: Int, unitPrice: Long, dateMillis: Long): Boolean {
+        val d = db(ctx)
+        d.beginTransaction()
+        try {
+            val current = d.query(
+                "items", arrayOf("stock"), "id = ?", arrayOf(item.id.toString()), null, null, null
+            ).use { c -> if (c.moveToFirst()) c.getInt(0) else -1 }
+
+            if (qty <= 0 || current < qty) return false
+
+            d.execSQL("UPDATE items SET stock = stock - ? WHERE id = ?", arrayOf<Any>(qty, item.id))
+            d.insertOrThrow("sales", null, ContentValues().apply {
+                put("item_id", item.id)
+                put("item_name", item.name)
+                put("image_path", item.imagePath)
+                put("qty", qty)
+                put("unit_price", unitPrice)
+                put("total", unitPrice * qty)
+                put("date_millis", dateMillis)
+            })
+            d.setTransactionSuccessful()
+            return true
+        } finally {
+            d.endTransaction()
+        }
     }
 }
 
-// ================= رنگ هشدار موجودی =================
-// T = حد هشداری که کاربر تعیین کرده.
-// بیشتر از ۳T: سبز | تا ۳T: نارنجی | تا ۲T: قرمز | تا T یا کمتر: بنفش
+// ---------- Helpers ----------
 
-private val INV_OK = Color(0xFF2E7D32)
-private val INV_WARN = Color(0xFFEF6C00)
-private val INV_LOW = Color(0xFFD32F2F)
-private val INV_CRIT = Color(0xFF7B1FA2)
-
-private fun invColor(stock: Int, t: Int): Color = when {
-    stock <= t -> INV_CRIT
-    stock <= 2 * t -> INV_LOW
-    stock <= 3 * t -> INV_WARN
-    else -> INV_OK
+private fun copyImageToApp(ctx: Context, uri: Uri): String? {
+    return try {
+        val dir = File(ctx.filesDir, "inv_images").apply { mkdirs() }
+        val out = File(dir, "item_${System.currentTimeMillis()}.jpg")
+        ctx.contentResolver.openInputStream(uri)?.use { input ->
+            out.outputStream().use { input.copyTo(it) }
+        } ?: return null
+        out.absolutePath
+    } catch (e: Exception) {
+        null
+    }
 }
 
-@Composable
-private fun invLabel(stock: Int, t: Int): String = when {
-    stock <= t -> tr("بحرانی", "Critical", "حرج")
-    stock <= 2 * t -> tr("کم", "Low", "منخفض")
-    stock <= 3 * t -> tr("رو به کاهش", "Decreasing", "في تناقص")
-    else -> tr("کافی", "OK", "كافٍ")
+private fun decodeThumb(path: String): ImageBitmap? {
+    val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+    return BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
 }
 
-// ================= صفحه انبار =================
+// Stock levels, T = alert level set by the user
+// 0 = green (more than 3T), 1 = orange (more than 2T up to 3T),
+// 2 = red (more than T up to 2T), 3 = purple (T or less)
+private fun invLevel(stock: Int, t: Int): Int = when {
+    stock > 3 * t -> 0
+    stock > 2 * t -> 1
+    stock > t -> 2
+    else -> 3
+}
+
+private fun invColorOf(level: Int): Color = when (level) {
+    0 -> Color(0xFF2E7D32)
+    1 -> Color(0xFFEF6C00)
+    2 -> Color(0xFFD32F2F)
+    else -> Color(0xFF7B1FA2)
+}
+
+// ---------- Screen ----------
 
 @Composable
 fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     val ctx = LocalContext.current
-    var version by remember { mutableStateOf(0) }
-    val items = remember(version) { InvStore.all(ctx) }
-    val oldProducts by vm.products.collectAsState()
+    val prefs = remember { ctx.getSharedPreferences("hesabyar_inventory", Context.MODE_PRIVATE) }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
-    // یک‌بار، کالاهای قبلی (بخش فروشگاه قدیمی) به این بخش منتقل می‌شوند
-    LaunchedEffect(oldProducts) {
-        val p = ctx.getSharedPreferences("hesabyar_inventory", Context.MODE_PRIVATE)
-        if (!p.getBoolean("migrated", false) && oldProducts.isNotEmpty()) {
-            oldProducts.forEach { old ->
-                InvStore.save(ctx, InvItem(0L, old.name, "", old.code, old.price, old.stock, 0))
-            }
-            p.edit().putBoolean("migrated", true).apply()
-            version++
+    var items by remember { mutableStateOf(InvStore.all(ctx)) }
+    var sales by remember { mutableStateOf(InvStore.salesAll(ctx)) }
+    var view by remember { mutableStateOf(0) } // 0 = items, 1 = sales report
+    var query by remember { mutableStateOf("") }
+    var sellTarget by remember { mutableStateOf<InvItem?>(null) }
+    var deleteTarget by remember { mutableStateOf<InvItem?>(null) }
+
+    // Form state
+    var editId by remember { mutableStateOf(0L) }
+    var fName by remember { mutableStateOf("") }
+    var fDesc by remember { mutableStateOf("") }
+    var fCode by remember { mutableStateOf("") }
+    var fPrice by remember { mutableStateOf("") }
+    var fStock by remember { mutableStateOf("") }
+    var fThreshold by remember { mutableStateOf("") }
+    var fImage by remember { mutableStateOf<String?>(null) }
+    var fOriginalImage by remember { mutableStateOf<String?>(null) }
+    var triedSave by remember { mutableStateOf(false) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            copyImageToApp(ctx, uri)?.let { fImage = it }
         }
     }
 
-    // وضعیت فرم
-    var editId by rememberSaveable { mutableStateOf(0L) }
-    var name by rememberSaveable { mutableStateOf("") }
-    var desc by rememberSaveable { mutableStateOf("") }
-    var code by rememberSaveable { mutableStateOf("") }
-    var priceText by rememberSaveable { mutableStateOf("") }
-    var stockText by rememberSaveable { mutableStateOf("") }
-    var thresholdText by rememberSaveable { mutableStateOf("") }
-    var search by rememberSaveable { mutableStateOf("") }
-    var errText by remember { mutableStateOf<String?>(null) }
-    var sellTarget by remember { mutableStateOf<InvItem?>(null) }
-
-    fun clearForm() {
-        editId = 0L
-        name = ""
-        desc = ""
-        code = ""
-        priceText = ""
-        stockText = ""
-        thresholdText = ""
-        errText = null
+    // One-time migration of old products into the inventory
+    LaunchedEffect(Unit) {
+        if (!prefs.getBoolean("migrated", false)) {
+            vm.products.value.forEach { p ->
+                InvStore.save(
+                    ctx,
+                    InvItem(
+                        name = p.name,
+                        description = "",
+                        code = p.code,
+                        price = p.price,
+                        stock = p.stock,
+                        threshold = 0,
+                        imagePath = null
+                    )
+                )
+            }
+            prefs.edit().putBoolean("migrated", true).apply()
+            items = InvStore.all(ctx)
+        }
     }
 
-    // متن‌ها باید داخل بدنه Compose ساخته شوند، نه داخل onClick
-    val isEditing = editId != 0L
-    val currency = stringResource(R.string.currency)
-    val titleNew = tr("ثبت کالای جدید", "Add product", "إضافة سلعة")
-    val titleEdit = tr("ویرایش کالا", "Edit product", "تعديل السلعة")
-    val lblName = tr("نام کالا", "Product name", "اسم السلعة")
-    val lblDesc = tr("توضیحات کالا", "Description", "وصف السلعة")
-    val lblCode = tr("کد کالا", "Product code", "رمز السلعة")
-    val lblPrice = tr("قیمت", "Price", "السعر")
-    val lblStock = tr("موجودی", "Stock", "المخزون")
-    val lblThreshold = tr("حد هشدار موجودی", "Low-stock alert level", "حد تنبيه المخزون")
-    val thresholdHelp = tr(
-        "وقتی موجودی به این عدد برسد یا کمتر شود بنفش میشود. تا ۲ برابر این عدد قرمز، تا ۳ برابر نارنجی و بیشتر از آن سبز.",
-        "At or below this number the colour is purple. Up to 2x red, up to 3x orange, above that green.",
-        "عند هذا الرقم أو أقل يصبح اللون بنفسجياً. حتى ضعفه أحمر، وحتى ثلاثة أضعافه برتقالي، وأعلى من ذلك أخضر."
-    )
-    val saveNew = tr("ذخیره کالا", "Save product", "حفظ السلعة")
-    val saveEdit = tr("ثبت تغییرات", "Save changes", "حفظ التغييرات")
-    val cancelEditText = tr("انصراف از ویرایش", "Cancel edit", "إلغاء التعديل")
-    val errNameText = tr("نام کالا را وارد کنید", "Enter the product name", "أدخل اسم السلعة")
-    val legendText = tr(
-        "رنگ‌ها: سبز = کافی، نارنجی = رو به کاهش، قرمز = کم، بنفش = بحرانی",
-        "Colours: green = OK, orange = decreasing, red = low, purple = critical",
-        "الألوان: أخضر = كافٍ، برتقالي = في تناقص، أحمر = منخفض، بنفسجي = حرج"
-    )
-    val searchLabel = tr("جست‌وجو با نام یا کد", "Search by name or code", "ابحث بالاسم أو الرمز")
-    val totalLabel = tr("ارزش کل موجودی", "Total stock value", "القيمة الإجمالية للمخزون")
-    val countLabel = tr("تعداد کالاها", "Products", "عدد السلع")
-    val emptyText = tr("هنوز کالایی ثبت نشده است.", "No products yet.", "لا توجد سلع بعد.")
-    val noResultText = tr("موردی با این جست‌وجو پیدا نشد.", "No match found.", "لا توجد نتيجة مطابقة.")
+    fun reload() {
+        items = InvStore.all(ctx)
+        sales = InvStore.salesAll(ctx)
+    }
 
-    val q = search.trim().lowercase()
-    val shown = if (q.isEmpty()) {
-        items
-    } else {
-        items.filter { it.name.lowercase().contains(q) || it.code.lowercase().contains(q) }
+    fun resetForm() {
+        editId = 0L
+        fName = ""
+        fDesc = ""
+        fCode = ""
+        fPrice = ""
+        fStock = ""
+        fThreshold = ""
+        fImage = null
+        fOriginalImage = null
+        triedSave = false
+    }
+
+    fun startEdit(inv: InvItem) {
+        editId = inv.id
+        fName = inv.name
+        fDesc = inv.description
+        fCode = inv.code
+        fPrice = inv.price.toString()
+        fStock = inv.stock.toString()
+        fThreshold = inv.threshold.toString()
+        fImage = inv.imagePath
+        fOriginalImage = inv.imagePath
+        triedSave = false
+        scope.launch { listState.animateScrollToItem(0) }
+    }
+
+    // All texts are built here, not inside callbacks
+    val tItemsTab = tr("کالاها", "Items", "المنتجات")
+    val tSalesTab = tr("گزارش فروش", "Sales report", "تقرير المبيعات")
+    val tNew = tr("ثبت کالای جدید", "Add new item", "إضافة منتج جديد")
+    val tEditTitle = tr("ویرایش کالا", "Edit item", "تعديل المنتج")
+    val tName = tr("نام کالا", "Item name", "اسم المنتج")
+    val tDesc = tr("توضیحات کالا", "Description", "الوصف")
+    val tCode = tr("کد کالا", "Item code", "رمز المنتج")
+    val tPrice = tr("قیمت", "Price", "السعر")
+    val tStock = tr("موجودی", "Stock", "المخزون")
+    val tThresholdLabel = tr("حد هشدار موجودی", "Low-stock alert level", "حد تنبيه المخزون")
+    val tPickPhoto = tr("انتخاب عکس", "Choose photo", "اختيار صورة")
+    val tRemovePhoto = tr("حذف عکس", "Remove photo", "حذف الصورة")
+    val tNameRequired = tr("نام کالا را وارد کنید", "Enter the item name", "أدخل اسم المنتج")
+    val tSave = tr("ذخیره کالا", "Save item", "حفظ المنتج")
+    val tUpdate = tr("ثبت تغییرات", "Save changes", "حفظ التغييرات")
+    val tCancel = tr("انصراف", "Cancel", "إلغاء")
+    val tSearch = tr("جست‌وجو با نام یا کد", "Search by name or code", "بحث بالاسم أو الرمز")
+    val tTotalValue = tr("ارزش کل موجودی", "Total stock value", "القيمة الإجمالية للمخزون")
+    val tCount = tr("تعداد کالاها", "Items", "عدد المنتجات")
+    val tCritical = tr("کالاهای بحرانی", "Critical items", "المنتجات الحرجة")
+    val tEmpty = tr("هنوز کالایی ثبت نشده", "No items yet", "لا توجد منتجات بعد")
+    val tNoSales = tr("هنوز فروشی ثبت نشده", "No sales yet", "لا توجد مبيعات بعد")
+    val tSalesCount = tr("تعداد فروش", "Number of sales", "عدد عمليات البيع")
+    val tSalesTotal = tr("جمع فروش", "Total sales", "إجمالي المبيعات")
+    val tSoldUnits = tr("تعداد فروخته‌شده", "Units sold", "الوحدات المباعة")
+    val tTop = tr("پرفروش‌ترین کالاها", "Best sellers", "الأكثر مبيعًا")
+    val tSell = tr("فروش", "Sell", "بيع")
+    val tEdit = tr("ویرایش", "Edit", "تعديل")
+    val tDelete = tr("حذف", "Delete", "حذف")
+    val tDeleteAsk = tr("این کالا حذف شود؟", "Delete this item?", "هل تريد حذف هذا المنتج؟")
+    val tUnits = tr("عدد", "pcs", "قطعة")
+    val tSearchNone = tr("کالایی با این مشخصات پیدا نشد", "No item matches", "لا يوجد منتج مطابق")
+
+    val q = query.trim().lowercase()
+    val shown = if (q.isEmpty()) items else items.filter {
+        it.name.lowercase().contains(q) || it.code.lowercase().contains(q)
     }
     val totalValue = items.sumOf { it.price * it.stock }
+    val criticalCount = items.count { it.threshold > 0 && it.stock <= it.threshold }
+    val salesTotal = sales.sumOf { it.total }
+    val soldUnits = sales.sumOf { it.qty }
+    val topSellers = sales
+        .groupBy { it.itemName }
+        .map { (name, list) -> name to list.sumOf { it.qty } }
+        .sortedByDescending { it.second }
+        .take(5)
+
+    // Sell dialog
+    sellTarget?.let { target ->
+        SellDialog(
+            item = target,
+            onDismiss = { sellTarget = null },
+            onConfirm = { qty, unitPrice ->
+                val now = System.currentTimeMillis()
+                if (InvStore.sell(ctx, target, qty, unitPrice, now)) {
+                    vm.addTransaction("${target.name} × $qty", unitPrice * qty, true, "sale")
+                    reload()
+                }
+                sellTarget = null
+            }
+        )
+    }
+
+    // Delete dialog
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(tDeleteAsk) },
+            text = { Text(target.name) },
+            confirmButton = {
+                Button(onClick = {
+                    InvStore.delete(ctx, target)
+                    if (editId == target.id) resetForm()
+                    deleteTarget = null
+                    reload()
+                }) { Text(tDelete) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text(tCancel) }
+            }
+        )
+    }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // فرم ثبت و ویرایش
         item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        if (isEditing) titleEdit else titleNew,
-                        style = MaterialTheme.typography.titleMedium
-                    )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (view == 0) {
+                    Button(onClick = { view = 0 }) { Text(tItemsTab) }
+                } else {
+                    OutlinedButton(onClick = { view = 0 }) { Text(tItemsTab) }
+                }
+                if (view == 1) {
+                    Button(onClick = { view = 1 }) { Text(tSalesTab) }
+                } else {
+                    OutlinedButton(onClick = { view = 1 }) { Text(tSalesTab) }
+                }
+            }
+        }
 
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(lblName) }
-                    )
-                    OutlinedTextField(
-                        value = desc,
-                        onValueChange = { desc = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
-                        label = { Text(lblDesc) }
-                    )
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(lblCode) }
-                    )
-                    OutlinedTextField(
-                        value = priceText,
-                        onValueChange = { priceText = digitsOnly(it) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        visualTransformation = ThousandsVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("$lblPrice ($currency)") }
-                    )
-                    OutlinedTextField(
-                        value = stockText,
-                        onValueChange = { stockText = digitsOnly(it) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(lblStock) }
-                    )
-                    OutlinedTextField(
-                        value = thresholdText,
-                        onValueChange = { thresholdText = digitsOnly(it) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(lblThreshold) }
-                    )
-                    Text(thresholdHelp, style = MaterialTheme.typography.bodySmall)
-
-                    errText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-
-                    Button(
-                        onClick = {
-                            if (name.isBlank()) {
-                                errText = errNameText
-                            } else {
-                                InvStore.save(
-                                    ctx,
-                                    InvItem(
-                                        id = editId,
-                                        name = name.trim(),
-                                        description = desc.trim(),
-                                        code = code.trim(),
-                                        price = priceText.toLongOrNull() ?: 0L,
-                                        stock = stockText.toIntOrNull() ?: 0,
-                                        threshold = thresholdText.toIntOrNull() ?: 0
-                                    )
-                                )
-                                clearForm()
-                                version++
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+        if (view == 0) {
+            // Add / edit form
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (isEditing) saveEdit else saveNew)
-                    }
+                        Text(
+                            if (editId == 0L) tNew else tEditTitle,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ProductImage(path = fImage, size = 96.dp)
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(onClick = {
+                                    picker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }) { Text(tPickPhoto) }
+                                if (fImage != null) {
+                                    TextButton(onClick = { fImage = null }) { Text(tRemovePhoto) }
+                                }
+                            }
+                        }
 
-                    if (isEditing) {
-                        TextButton(onClick = { clearForm() }) {
-                            Text(cancelEditText)
+                        OutlinedTextField(
+                            value = fName,
+                            onValueChange = { fName = it },
+                            label = { Text(tName) },
+                            singleLine = true,
+                            isError = triedSave && fName.isBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (triedSave && fName.isBlank()) {
+                            Text(tNameRequired, color = MaterialTheme.colorScheme.error)
+                        }
+                        OutlinedTextField(
+                            value = fDesc,
+                            onValueChange = { fDesc = it },
+                            label = { Text(tDesc) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = fCode,
+                            onValueChange = { fCode = it },
+                            label = { Text(tCode) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = fPrice,
+                            onValueChange = { fPrice = digitsOnly(it) },
+                            label = { Text(tPrice) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = fStock,
+                            onValueChange = { fStock = digitsOnly(it) },
+                            label = { Text(tStock) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = fThreshold,
+                            onValueChange = { fThreshold = digitsOnly(it) },
+                            label = { Text(tThresholdLabel) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                triedSave = true
+                                if (fName.isNotBlank()) {
+                                    val orig = fOriginalImage
+                                    InvStore.save(
+                                        ctx,
+                                        InvItem(
+                                            id = editId,
+                                            name = fName.trim(),
+                                            description = fDesc.trim(),
+                                            code = fCode.trim(),
+                                            price = fPrice.toLongOrNull() ?: 0L,
+                                            stock = fStock.toIntOrNull() ?: 0,
+                                            threshold = fThreshold.toIntOrNull() ?: 0,
+                                            imagePath = fImage
+                                        )
+                                    )
+                                    // Remove the old photo if it was replaced
+                                    if (orig != null && orig != fImage) File(orig).delete()
+                                    resetForm()
+                                    reload()
+                                }
+                            }) { Text(if (editId == 0L) tSave else tUpdate) }
+
+                            if (editId != 0L) {
+                                OutlinedButton(onClick = { resetForm() }) { Text(tCancel) }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // خلاصه و راهنمای رنگ
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        "$totalLabel: ${formatMoney(totalValue)} $currency",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text("$countLabel: ${items.size}", style = MaterialTheme.typography.bodyMedium)
-                    Text(legendText, style = MaterialTheme.typography.bodySmall)
+            // Totals
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("$tCount: ${items.size}")
+                        Text("$tTotalValue: ${formatMoney(totalValue)}", fontWeight = FontWeight.Bold)
+                        Text("$tCritical: $criticalCount")
+                    }
                 }
             }
-        }
 
-        // جست‌وجو
-        item {
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(searchLabel) }
-            )
-        }
-
-        if (items.isEmpty()) {
-            item { Text(emptyText) }
-        } else if (shown.isEmpty()) {
-            item { Text(noResultText) }
-        }
-
-        // فهرست کالاها
-        items(shown, key = { it.id }) { p ->
-            InvCard(
-                item = p,
-                onEdit = {
-                    editId = p.id
-                    name = p.name
-                    desc = p.description
-                    code = p.code
-                    priceText = p.price.toString()
-                    stockText = p.stock.toString()
-                    thresholdText = p.threshold.toString()
-                    errText = null
-                },
-                onSell = { sellTarget = p },
-                onDelete = {
-                    InvStore.delete(ctx, p.id)
-                    if (editId == p.id) clearForm()
-                    version++
+            // Legend
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        InvLegend()
+                    }
                 }
-            )
+            }
+
+            // Search
+            item {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text(tSearch) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (items.isEmpty()) {
+                item { Text(tEmpty) }
+            } else if (shown.isEmpty()) {
+                item { Text(tSearchNone) }
+            }
+
+            items(shown, key = { it.id }) { inv ->
+                InvCard(
+                    item = inv,
+                    onSell = { sellTarget = inv },
+                    onEdit = { startEdit(inv) },
+                    onDelete = { deleteTarget = inv }
+                )
+            }
+        } else {
+            // Sales report
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("$tSalesCount: ${sales.size}")
+                        Text("$tSalesTotal: ${formatMoney(salesTotal)}", fontWeight = FontWeight.Bold)
+                        Text("$tSoldUnits: $soldUnits")
+                    }
+                }
+            }
+
+            if (topSellers.isNotEmpty()) {
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(tTop, fontWeight = FontWeight.Bold)
+                            topSellers.forEach { (name, qty) ->
+                                Text("$name: $qty $tUnits")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (sales.isEmpty()) {
+                item { Text(tNoSales) }
+            }
+
+            items(sales, key = { it.id }) { sale ->
+                SaleRow(sale = sale, regionType = regionType)
+            }
         }
     }
+}
 
-    // پنجره فروش
-    val target = sellTarget
-    if (target != null) {
-        InvSellDialog(
-            item = target,
-            onDismiss = { sellTarget = null },
-            onConfirm = { qty ->
-                InvStore.setStock(ctx, target.id, target.stock - qty)
-                // فروش به عنوان درآمد در حسابداری ثبت می‌شود
-                vm.addTransaction("${target.name} × $qty", target.price * qty, true, Category.SALE.key)
-                sellTarget = null
-                version++
-            }
+// ---------- Parts ----------
+
+@Composable
+private fun ProductImage(path: String?, size: Dp) {
+    val bmp: ImageBitmap? = remember(path) { path?.let { decodeThumb(it) } }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bmp != null) {
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text("—", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun invLabel(level: Int): String = when (level) {
+    0 -> tr("موجود", "In stock", "متوفر")
+    1 -> tr("رو به کاهش", "Decreasing", "في انخفاض")
+    2 -> tr("کم", "Low", "منخفض")
+    else -> tr("بحرانی", "Critical", "حرج")
+}
+
+@Composable
+private fun InvLegend() {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LegendRow(
+            Color(0xFF2E7D32),
+            tr("بیشتر از ۳ برابر حد هشدار", "More than 3× the alert level", "أكثر من 3 أضعاف حد التنبيه")
+        )
+        LegendRow(
+            Color(0xFFEF6C00),
+            tr("بیشتر از ۲ تا ۳ برابر حد هشدار", "2× to 3× the alert level", "من ضعفين إلى 3 أضعاف الحد")
+        )
+        LegendRow(
+            Color(0xFFD32F2F),
+            tr("بیشتر از حد هشدار تا ۲ برابر", "Above alert level up to 2×", "أعلى من الحد حتى ضعفين")
+        )
+        LegendRow(
+            Color(0xFF7B1FA2),
+            tr("برابر حد هشدار یا کمتر", "At or below alert level", "عند حد التنبيه أو أقل")
         )
     }
 }
 
-// ================= کارت هر کالا =================
+@Composable
+private fun LegendRow(color: Color, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(12.dp).background(color, RoundedCornerShape(6.dp)))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall)
+    }
+}
 
 @Composable
 private fun InvCard(
     item: InvItem,
-    onEdit: () -> Unit,
     onSell: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val color = invColor(item.stock, item.threshold)
-    val label = invLabel(item.stock, item.threshold)
-    val currency = stringResource(R.string.currency)
-    val codeText = tr("کد", "Code", "الرمز")
-    val stockLbl = tr("موجودی", "Stock", "المخزون")
-    val priceLbl = tr("قیمت", "Price", "السعر")
-    val thrLbl = tr("حد هشدار", "Alert level", "حد التنبيه")
-    val editText = tr("ویرایش", "Edit", "تعديل")
-    val sellText = tr("فروش", "Sell", "بيع")
+    val level = invLevel(item.stock, item.threshold)
+    val c = invColorOf(level)
+    val label = invLabel(level)
+    val tCode = tr("کد", "Code", "الرمز")
+    val tPrice = tr("قیمت", "Price", "السعر")
+    val tStock = tr("موجودی", "Stock", "المخزون")
+    val tSell = tr("فروش", "Sell", "بيع")
+    val tEdit = tr("ویرایش", "Edit", "تعديل")
+    val tDelete = tr("حذف", "Delete", "حذف")
 
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
+        Row(
             modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            ProductImage(path = item.imagePath, size = 72.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(item.name, fontWeight = FontWeight.Bold)
+                if (item.code.isNotBlank()) {
+                    Text("$tCode: ${item.code}", style = MaterialTheme.typography.bodySmall)
+                }
+                Text("$tPrice: ${formatMoney(item.price)}")
                 Text(
-                    text = item.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
+                    "$tStock: ${item.stock}  ·  $label",
+                    color = c,
+                    fontWeight = FontWeight.Bold
                 )
-                Surface(color = color, shape = RoundedCornerShape(8.dp)) {
+                if (item.description.isNotBlank()) {
                     Text(
-                        text = label,
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        item.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
-            if (item.code.isNotBlank()) {
-                Text("$codeText: ${item.code}", style = MaterialTheme.typography.bodySmall)
-            }
-            if (item.description.isNotBlank()) {
-                Text(item.description, style = MaterialTheme.typography.bodySmall)
-            }
-            Text(
-                "$stockLbl: ${item.stock}   •   $priceLbl: ${formatMoney(item.price)} $currency",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text("$thrLbl: ${item.threshold}", style = MaterialTheme.typography.bodySmall)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onEdit) { Text(editText) }
-                Button(onClick = onSell, enabled = item.stock > 0) { Text(sellText) }
-                TextButton(onClick = onDelete) { Text(stringResource(R.string.delete)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = onSell) { Text(tSell) }
+                    OutlinedButton(onClick = onEdit) { Text(tEdit) }
+                    TextButton(onClick = onDelete) { Text(tDelete, color = MaterialTheme.colorScheme.error) }
+                }
             }
         }
     }
 }
 
-// ================= پنجره فروش =================
+@Composable
+private fun SaleRow(sale: SaleRecord, regionType: CalendarType) {
+    val dateText = formatWith(sale.dateMillis, "yyyy/MM/dd HH:mm", deviceLocale(), regionType.timeZone)
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ProductImage(path = sale.imagePath, size = 48.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(sale.itemName, fontWeight = FontWeight.Bold)
+                Text(
+                    "${sale.qty} × ${formatMoney(sale.unitPrice)} = ${formatMoney(sale.total)}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(dateText, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
 
 @Composable
-private fun InvSellDialog(
+private fun SellDialog(
     item: InvItem,
     onDismiss: () -> Unit,
-    onConfirm: (Int) -> Unit
+    onConfirm: (Int, Long) -> Unit
 ) {
     var qtyText by remember { mutableStateOf("1") }
-    var err by remember { mutableStateOf<String?>(null) }
+    var priceText by remember { mutableStateOf(item.price.toString()) }
 
-    val titleText = tr("فروش: ", "Sell: ", "بيع: ") + item.name
-    val qtyLabel = tr(
-        "تعداد فروش (موجودی: ${item.stock})",
-        "Quantity (stock: ${item.stock})",
-        "الكمية (المخزون: ${item.stock})"
-    )
-    val errQty = tr("تعداد معتبر وارد کنید", "Enter a valid quantity", "أدخل كمية صحيحة")
-    val errStock = tr("موجودی کافی نیست", "Not enough stock", "المخزون غير كافٍ")
-    val confirmText = tr("ثبت فروش", "Confirm sale", "تأكيد البيع")
-    val cancelText = tr("انصراف", "Cancel", "إلغاء")
+    val qty = qtyText.toIntOrNull() ?: 0
+    val unit = priceText.toLongOrNull() ?: 0L
+    val tooMany = qty > item.stock
+    val invalid = qty <= 0 || tooMany
+
+    val tTitle = tr("فروش ${item.name}", "Sell ${item.name}", "بيع ${item.name}")
+    val tStockInfo = tr("موجودی فعلی: ${item.stock}", "Current stock: ${item.stock}", "المخزون الحالي: ${item.stock}")
+    val tQty = tr("تعداد فروش", "Quantity", "الكمية")
+    val tUnit = tr("قیمت فروش واحد", "Unit sale price", "سعر البيع للوحدة")
+    val tTotal = tr("جمع فروش: ${formatMoney(unit * qty)}", "Total: ${formatMoney(unit * qty)}", "الإجمالي: ${formatMoney(unit * qty)}")
+    val tNotEnough = tr("موجودی کافی نیست", "Not enough stock", "المخزون غير كافٍ")
+    val tConfirm = tr("ثبت فروش", "Record sale", "تسجيل البيع")
+    val tCancel = tr("انصراف", "Cancel", "إلغاء")
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(titleText) },
+        title = { Text(tTitle) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(tStockInfo)
                 OutlinedTextField(
                     value = qtyText,
                     onValueChange = { qtyText = digitsOnly(it) },
+                    label = { Text(tQty) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(qtyLabel) }
+                    modifier = Modifier.fillMaxWidth()
                 )
-                err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = digitsOnly(it) },
+                    label = { Text(tUnit) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(tTotal, fontWeight = FontWeight.Bold)
+                if (tooMany) {
+                    Text(tNotEnough, color = MaterialTheme.colorScheme.error)
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val qty = qtyText.toIntOrNull() ?: 0
-                when {
-                    qty <= 0 -> err = errQty
-                    qty > item.stock -> err = errStock
-                    else -> onConfirm(qty)
-                }
-            }) {
-                Text(confirmText)
-            }
+            Button(
+                onClick = { onConfirm(qty, unit) },
+                enabled = !invalid
+            ) { Text(tConfirm) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(cancelText)
-            }
+            TextButton(onClick = onDismiss) { Text(tCancel) }
         }
     )
 }
