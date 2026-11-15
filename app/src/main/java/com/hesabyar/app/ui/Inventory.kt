@@ -11,11 +11,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,7 +26,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
@@ -71,7 +75,8 @@ data class InvItem(
     val price: Long = 0L,
     val stock: Int = 0,
     val threshold: Int = 0,
-    val imagePath: String? = null
+    val imagePath: String? = null,
+    val views: Long = 0L
 )
 
 data class SaleRecord(
@@ -85,9 +90,11 @@ data class SaleRecord(
     val dateMillis: Long
 )
 
+private data class TopRow(val name: String, val qty: Int, val revenue: Long)
+
 // ---------- Database ----------
 
-private const val INV_DB_VERSION = 3
+private const val INV_DB_VERSION = 4
 
 private class InvDbHelper(ctx: Context) :
     SQLiteOpenHelper(ctx, "hesabyar_inventory.db", null, INV_DB_VERSION) {
@@ -111,11 +118,17 @@ private fun createTables(db: SQLiteDatabase) {
             "price INTEGER NOT NULL DEFAULT 0, " +
             "stock INTEGER NOT NULL DEFAULT 0, " +
             "threshold INTEGER NOT NULL DEFAULT 0, " +
-            "image_path TEXT)"
+            "image_path TEXT, " +
+            "views INTEGER NOT NULL DEFAULT 0)"
     )
-    // برای دیتابیس‌های قدیمی که ستون عکس ندارند
+    // برای دیتابیس‌های قدیمی که این ستون‌ها را ندارند
     try {
         db.execSQL("ALTER TABLE items ADD COLUMN image_path TEXT")
+    } catch (e: Exception) {
+        // ستون از قبل وجود دارد
+    }
+    try {
+        db.execSQL("ALTER TABLE items ADD COLUMN views INTEGER NOT NULL DEFAULT 0")
     } catch (e: Exception) {
         // ستون از قبل وجود دارد
     }
@@ -143,7 +156,8 @@ private fun Cursor.toItem(): InvItem = InvItem(
     price = num("price"),
     stock = num("stock").toInt(),
     threshold = num("threshold").toInt(),
-    imagePath = str("image_path")?.takeIf { it.isNotBlank() }
+    imagePath = str("image_path")?.takeIf { it.isNotBlank() },
+    views = num("views")
 )
 
 private fun Cursor.toSale(): SaleRecord = SaleRecord(
@@ -202,6 +216,11 @@ object InvStore {
     fun delete(ctx: Context, item: InvItem) {
         db(ctx).delete("items", "id = ?", arrayOf(item.id.toString()))
         item.imagePath?.let { File(it).delete() }
+    }
+
+    // ثبت یک بررسی برای کالا
+    fun addView(ctx: Context, itemId: Long) {
+        db(ctx).execSQL("UPDATE items SET views = views + 1 WHERE id = ?", arrayOf<Any>(itemId))
     }
 
     // موجودی را کم می‌کند و فروش را ثبت می‌کند. اگر موجودی کافی نباشد false برمی‌گرداند.
@@ -285,10 +304,11 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
 
     var stockItems by remember { mutableStateOf(InvStore.all(ctx)) }
     var sales by remember { mutableStateOf(InvStore.salesAll(ctx)) }
-    var view by remember { mutableStateOf(0) } // ۰ = کالاها، ۱ = گزارش فروش
+    var view by remember { mutableStateOf(0) } // ۰ کالاها، ۱ گزارش فروش، ۲ بیشترین بررسی
     var query by remember { mutableStateOf("") }
     var sellTarget by remember { mutableStateOf<InvItem?>(null) }
     var deleteTarget by remember { mutableStateOf<InvItem?>(null) }
+    var detailId by remember { mutableStateOf<Long?>(null) }
 
     // وضعیت فرم
     var editId by remember { mutableStateOf(0L) }
@@ -363,9 +383,17 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         scope.launch { listState.animateScrollToItem(0) }
     }
 
+    // باز کردن مشخصات کالا و ثبت یک بررسی
+    fun openDetail(inv: InvItem) {
+        InvStore.addView(ctx, inv.id)
+        stockItems = InvStore.all(ctx)
+        detailId = inv.id
+    }
+
     // همه متن‌ها فقط اینجا ساخته می‌شوند، نه داخل callbackها
     val tItemsTab = tr("کالاها", "Items", "المنتجات")
     val tSalesTab = tr("گزارش فروش", "Sales report", "تقرير المبيعات")
+    val tViewsTab = tr("بیشترین بررسی", "Most viewed", "الأكثر مشاهدة")
     val tNew = tr("ثبت کالای جدید", "Add new item", "إضافة منتج جديد")
     val tEditTitle = tr("ویرایش کالا", "Edit item", "تعديل المنتج")
     val tName = tr("نام کالا", "Item name", "اسم المنتج")
@@ -389,11 +417,18 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     val tSalesCount = tr("تعداد فروش", "Number of sales", "عدد عمليات البيع")
     val tSalesTotal = tr("جمع فروش", "Total sales", "إجمالي المبيعات")
     val tSoldUnits = tr("تعداد فروخته‌شده", "Units sold", "الوحدات المباعة")
-    val tTop = tr("پرفروش‌ترین کالاها", "Best sellers", "الأكثر مبيعًا")
+    val tBest = tr("بیشترین فروش", "Best sellers", "الأكثر مبيعًا")
     val tDelete = tr("حذف", "Delete", "حذف")
     val tDeleteAsk = tr("این کالا حذف شود؟", "Delete this item?", "هل تريد حذف هذا المنتج؟")
     val tUnits = tr("عدد", "pcs", "قطعة")
     val tSearchNone = tr("کالایی با این مشخصات پیدا نشد", "No item matches", "لا يوجد منتج مطابق")
+    val tViewsTitle = tr("کالاهای پربررسی", "Most viewed items", "المنتجات الأكثر مشاهدة")
+    val tViewsHint = tr(
+        "هر بار که کالایی را باز کنید، یک بررسی ثبت می‌شود",
+        "Each time you open an item, one view is recorded",
+        "في كل مرة تفتح فيها منتجًا تُسجَّل مشاهدة واحدة"
+    )
+    val tNoViews = tr("هنوز کالایی بررسی نشده", "No item has been viewed yet", "لم يتم عرض أي منتج بعد")
 
     val q = query.trim().lowercase()
     val shown = if (q.isEmpty()) {
@@ -401,14 +436,21 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
     } else {
         stockItems.filter { it.name.lowercase().contains(q) || it.code.lowercase().contains(q) }
     }
+    val viewed = stockItems.filter { it.views > 0L }.sortedByDescending { it.views }
     val totalValue = stockItems.sumOf { it.price * it.stock }
     val criticalCount = stockItems.count { it.threshold > 0 && it.stock <= it.threshold }
     val salesTotal = sales.sumOf { it.total }
     val soldUnits = sales.sumOf { it.qty }
     val topSellers = sales
-        .groupBy { it.itemName }
-        .map { entry -> Pair(entry.key, entry.value.sumOf { it.qty }) }
-        .sortedByDescending { it.second }
+        .groupBy { it.itemId }
+        .map { entry ->
+            TopRow(
+                name = entry.value[0].itemName,
+                qty = entry.value.sumOf { it.qty },
+                revenue = entry.value.sumOf { it.total }
+            )
+        }
+        .sortedByDescending { it.qty }
         .take(5)
 
     val countText = stockItems.size.toString()
@@ -435,6 +477,12 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
                 sellTarget = null
             }
         )
+    }
+
+    // دیالوگ مشخصات کالا
+    val detailNow = detailId?.let { id -> stockItems.find { it.id == id } }
+    if (detailNow != null) {
+        ItemDetailDialog(item = detailNow, onDismiss = { detailId = null })
     }
 
     // دیالوگ حذف
@@ -464,225 +512,266 @@ fun InventoryScreen(vm: MainViewModel, regionType: CalendarType) {
         contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // تب‌ها
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (view == 0) {
-                    Button(onClick = { view = 0 }) { Text(tItemsTab) }
-                } else {
-                    OutlinedButton(onClick = { view = 0 }) { Text(tItemsTab) }
-                }
-                if (view == 1) {
-                    Button(onClick = { view = 1 }) { Text(tSalesTab) }
-                } else {
-                    OutlinedButton(onClick = { view = 1 }) { Text(tSalesTab) }
-                }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                InvTab(label = tItemsTab, selected = view == 0, onClick = { view = 0 })
+                InvTab(label = tSalesTab, selected = view == 1, onClick = { view = 1 })
+                InvTab(label = tViewsTab, selected = view == 2, onClick = { view = 2 })
             }
         }
 
-        if (view == 0) {
-            // فرم ثبت و ویرایش
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            if (editId == 0L) tNew else tEditTitle,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
+        when (view) {
+            0 -> {
+                // فرم ثبت و ویرایش
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            ProductImage(path = fImage, size = 96.dp)
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = { picker.launch("image/*") }) {
-                                    Text(tPickPhoto)
-                                }
-                                if (fImage != null) {
-                                    TextButton(onClick = { fImage = null }) {
-                                        Text(tRemovePhoto)
+                            Text(
+                                if (editId == 0L) tNew else tEditTitle,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ProductImage(path = fImage, size = 96.dp)
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(onClick = { picker.launch("image/*") }) {
+                                        Text(tPickPhoto)
+                                    }
+                                    if (fImage != null) {
+                                        TextButton(onClick = { fImage = null }) {
+                                            Text(tRemovePhoto)
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        OutlinedTextField(
-                            value = fName,
-                            onValueChange = { fName = it },
-                            label = { Text(tName) },
-                            singleLine = true,
-                            isError = triedSave && fName.isBlank(),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (triedSave && fName.isBlank()) {
-                            Text(tNameRequired, color = MaterialTheme.colorScheme.error)
-                        }
-                        OutlinedTextField(
-                            value = fDesc,
-                            onValueChange = { fDesc = it },
-                            label = { Text(tDesc) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = fCode,
-                            onValueChange = { fCode = it },
-                            label = { Text(tCode) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = fPrice,
-                            onValueChange = { fPrice = digitsOnly(it) },
-                            label = { Text(tPrice) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = fStock,
-                            onValueChange = { fStock = digitsOnly(it) },
-                            label = { Text(tStock) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = fThreshold,
-                            onValueChange = { fThreshold = digitsOnly(it) },
-                            label = { Text(tThresholdLabel) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                            OutlinedTextField(
+                                value = fName,
+                                onValueChange = { fName = it },
+                                label = { Text(tName) },
+                                singleLine = true,
+                                isError = triedSave && fName.isBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (triedSave && fName.isBlank()) {
+                                Text(tNameRequired, color = MaterialTheme.colorScheme.error)
+                            }
+                            OutlinedTextField(
+                                value = fDesc,
+                                onValueChange = { fDesc = it },
+                                label = { Text(tDesc) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = fCode,
+                                onValueChange = { fCode = it },
+                                label = { Text(tCode) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = fPrice,
+                                onValueChange = { fPrice = digitsOnly(it) },
+                                label = { Text(tPrice) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = fStock,
+                                onValueChange = { fStock = digitsOnly(it) },
+                                label = { Text(tStock) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = fThreshold,
+                                onValueChange = { fThreshold = digitsOnly(it) },
+                                label = { Text(tThresholdLabel) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                triedSave = true
-                                if (fName.isNotBlank()) {
-                                    val orig = fOriginalImage
-                                    InvStore.save(
-                                        ctx,
-                                        InvItem(
-                                            id = editId,
-                                            name = fName.trim(),
-                                            description = fDesc.trim(),
-                                            code = fCode.trim(),
-                                            price = fPrice.toLongOrNull() ?: 0L,
-                                            stock = fStock.toIntOrNull() ?: 0,
-                                            threshold = fThreshold.toIntOrNull() ?: 0,
-                                            imagePath = fImage
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = {
+                                    triedSave = true
+                                    if (fName.isNotBlank()) {
+                                        val orig = fOriginalImage
+                                        InvStore.save(
+                                            ctx,
+                                            InvItem(
+                                                id = editId,
+                                                name = fName.trim(),
+                                                description = fDesc.trim(),
+                                                code = fCode.trim(),
+                                                price = fPrice.toLongOrNull() ?: 0L,
+                                                stock = fStock.toIntOrNull() ?: 0,
+                                                threshold = fThreshold.toIntOrNull() ?: 0,
+                                                imagePath = fImage
+                                            )
                                         )
-                                    )
-                                    // اگر عکس عوض شد، عکس قبلی پاک شود
-                                    if (orig != null && orig != fImage) File(orig).delete()
-                                    resetForm()
-                                    reload()
+                                        // اگر عکس عوض شد، عکس قبلی پاک شود
+                                        if (orig != null && orig != fImage) File(orig).delete()
+                                        resetForm()
+                                        reload()
+                                    }
+                                }) {
+                                    Text(if (editId == 0L) tSave else tUpdate)
                                 }
-                            }) {
-                                Text(if (editId == 0L) tSave else tUpdate)
-                            }
 
-                            if (editId != 0L) {
-                                OutlinedButton(onClick = { resetForm() }) { Text(tCancel) }
+                                if (editId != 0L) {
+                                    OutlinedButton(onClick = { resetForm() }) { Text(tCancel) }
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // جمع‌ها
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(tCount + ": " + countText)
-                        Text(tTotalValue + ": " + totalValueText, fontWeight = FontWeight.Bold)
-                        Text(tCritical + ": " + criticalText)
-                    }
-                }
-            }
-
-            // راهنمای رنگ‌ها
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        InvLegend()
-                    }
-                }
-            }
-
-            // جست‌وجو
-            item {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text(tSearch) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            if (stockItems.isEmpty()) {
-                item { Text(tEmpty) }
-            } else if (shown.isEmpty()) {
-                item { Text(tSearchNone) }
-            }
-
-            items(shown, key = { it.id }) { inv ->
-                InvCard(
-                    item = inv,
-                    onSell = { sellTarget = inv },
-                    onEdit = { startEdit(inv) },
-                    onDelete = { deleteTarget = inv }
-                )
-            }
-        } else {
-            // گزارش فروش
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(tSalesCount + ": " + salesCountText)
-                        Text(tSalesTotal + ": " + salesTotalText, fontWeight = FontWeight.Bold)
-                        Text(tSoldUnits + ": " + soldUnitsText)
-                    }
-                }
-            }
-
-            if (topSellers.isNotEmpty()) {
+                // جمع‌ها
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text(tTop, fontWeight = FontWeight.Bold)
-                            topSellers.forEach { pair ->
-                                Text(pair.first + ": " + pair.second.toString() + " " + tUnits)
+                            Text(tCount + ": " + countText)
+                            Text(tTotalValue + ": " + totalValueText, fontWeight = FontWeight.Bold)
+                            Text(tCritical + ": " + criticalText)
+                        }
+                    }
+                }
+
+                // راهنمای رنگ‌ها
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            InvLegend()
+                        }
+                    }
+                }
+
+                // جست‌وجو
+                item {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text(tSearch) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                if (stockItems.isEmpty()) {
+                    item { Text(tEmpty) }
+                } else if (shown.isEmpty()) {
+                    item { Text(tSearchNone) }
+                }
+
+                items(shown, key = { it.id }) { inv ->
+                    InvCard(
+                        item = inv,
+                        onSell = { sellTarget = inv },
+                        onView = { openDetail(inv) },
+                        onEdit = { startEdit(inv) },
+                        onDelete = { deleteTarget = inv }
+                    )
+                }
+            }
+
+            1 -> {
+                // گزارش فروش
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(tSalesCount + ": " + salesCountText)
+                            Text(tSalesTotal + ": " + salesTotalText, fontWeight = FontWeight.Bold)
+                            Text(tSoldUnits + ": " + soldUnitsText)
+                        }
+                    }
+                }
+
+                if (topSellers.isNotEmpty()) {
+                    item {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(tBest, fontWeight = FontWeight.Bold)
+                                topSellers.forEach { row ->
+                                    Text(
+                                        row.name + ": " + row.qty.toString() + " " + tUnits +
+                                            " · " + formatMoney(row.revenue)
+                                    )
+                                }
                             }
                         }
                     }
                 }
+
+                if (sales.isEmpty()) {
+                    item { Text(tNoSales) }
+                }
+
+                items(sales, key = { it.id }) { sale ->
+                    SaleRow(sale = sale, regionType = regionType)
+                }
             }
 
-            if (sales.isEmpty()) {
-                item { Text(tNoSales) }
-            }
+            else -> {
+                // بیشترین بررسی
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(tViewsTitle, fontWeight = FontWeight.Bold)
+                            Text(tViewsHint, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
 
-            items(sales, key = { it.id }) { sale ->
-                SaleRow(sale = sale, regionType = regionType)
+                if (viewed.isEmpty()) {
+                    item { Text(tNoViews) }
+                }
+
+                itemsIndexed(viewed, key = { _, inv -> inv.id }) { index, inv ->
+                    ViewedRow(
+                        rank = index + 1,
+                        item = inv,
+                        onView = { openDetail(inv) }
+                    )
+                }
             }
         }
     }
 }
 
 // ---------- قسمت‌های کوچک ----------
+
+@Composable
+private fun RowScope.InvTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, modifier = Modifier.weight(1f)) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = Modifier.weight(1f)) { Text(label) }
+    }
+}
 
 @Composable
 private fun ProductImage(path: String?, size: Dp) {
@@ -749,6 +838,7 @@ private fun LegendRow(color: Color, text: String) {
 private fun InvCard(
     item: InvItem,
     onSell: () -> Unit,
+    onView: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -759,6 +849,7 @@ private fun InvCard(
     val tPrice = tr("قیمت", "Price", "السعر")
     val tStock = tr("موجودی", "Stock", "المخزون")
     val tSell = tr("فروش", "Sell", "بيع")
+    val tOpen = tr("مشاهده", "View", "عرض")
     val tEdit = tr("ویرایش", "Edit", "تعديل")
     val tDelete = tr("حذف", "Delete", "حذف")
     val priceText = formatMoney(item.price)
@@ -793,8 +884,12 @@ private fun InvCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
                     Button(onClick = onSell) { Text(tSell) }
+                    OutlinedButton(onClick = onView) { Text(tOpen) }
                     OutlinedButton(onClick = onEdit) { Text(tEdit) }
                     TextButton(onClick = onDelete) {
                         Text(tDelete, color = MaterialTheme.colorScheme.error)
@@ -803,6 +898,67 @@ private fun InvCard(
             }
         }
     }
+}
+
+@Composable
+private fun ViewedRow(rank: Int, item: InvItem, onView: () -> Unit) {
+    val tViews = tr("بررسی", "views", "مشاهدة")
+    val tOpen = tr("مشاهده", "View", "عرض")
+    val rankText = rank.toString()
+    val viewsText = item.views.toString()
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(rankText, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(10.dp))
+            ProductImage(path = item.imagePath, size = 48.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(item.name, fontWeight = FontWeight.Bold)
+                Text(viewsText + " " + tViews, style = MaterialTheme.typography.bodySmall)
+            }
+            OutlinedButton(onClick = onView) { Text(tOpen) }
+        }
+    }
+}
+
+@Composable
+private fun ItemDetailDialog(item: InvItem, onDismiss: () -> Unit) {
+    val tTitle = tr("مشخصات کالا", "Item details", "تفاصيل المنتج")
+    val tCode = tr("کد", "Code", "الرمز")
+    val tPrice = tr("قیمت", "Price", "السعر")
+    val tStock = tr("موجودی", "Stock", "المخزون")
+    val tViews = tr("تعداد بررسی", "Views", "عدد المشاهدات")
+    val tNoDesc = tr("توضیحی ثبت نشده", "No description", "لا يوجد وصف")
+    val tClose = tr("بستن", "Close", "إغلاق")
+    val priceText = formatMoney(item.price)
+    val stockText = item.stock.toString()
+    val viewsText = item.views.toString()
+    val descText = if (item.description.isBlank()) tNoDesc else item.description
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tTitle) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                ProductImage(path = item.imagePath, size = 120.dp)
+                Text(item.name, fontWeight = FontWeight.Bold)
+                if (item.code.isNotBlank()) {
+                    Text(tCode + ": " + item.code)
+                }
+                Text(tPrice + ": " + priceText)
+                Text(tStock + ": " + stockText)
+                Text(tViews + ": " + viewsText)
+                Text(descText, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(tClose) }
+        }
+    )
 }
 
 @Composable
