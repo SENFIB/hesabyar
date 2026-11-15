@@ -47,7 +47,7 @@ private const val DB_INVENTORY = "hesabyar_inventory.db"
 private const val REASON_NOT_BACKUP = "not_backup"
 private const val REASON_NEWER = "newer"
 
-private val BACKUP_DBS = listOf(DB_MAIN, DB_CHEQUES, DB_INVENTORY)
+private val BACKUP_DBS = listOf(DB_MAIN, DB_CHEQUES, DB_INVENTORY, SMS_DB_NAME)
 private val BACKUP_PREFS = listOf("hesabyar_prefs", "hesabyar_theme", "hesabyar_weather")
 private val SKIP_PREF_KEYS = setOf("storage_notice_seen", "geo_cache", "geo_cache_key")
 
