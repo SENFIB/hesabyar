@@ -151,6 +151,8 @@ fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
             onClick = { ThemeStore.save(context, ThemeSettings()) },
             modifier = Modifier.fillMaxWidth()
         ) {
+            ClockFormatRow()
+            BackupSection()
             Text(tr("بازگشت به تنظیمات پیش‌فرض", "Reset to defaults", "استعادة الإعدادات الافتراضية"))
         }
     }
