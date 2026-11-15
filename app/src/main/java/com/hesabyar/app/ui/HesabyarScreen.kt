@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -46,6 +47,8 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val scope = rememberCoroutineScope()
     var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
+    var showImageSearch by rememberSaveable { mutableStateOf(false) }
+    val searchByPhotoText = tr("جست‌وجو با عکس", "Search by photo", "بحث بالصورة")
 
     LaunchedEffect(Unit) {
         if (WeatherStore.hasLocation(context)) WeatherStore.refresh(context)
@@ -59,6 +62,16 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
         containerColor = Color.Transparent,
         topBar = {
             ClockHeader(regionType = regionType, deviceClock = deviceClock)
+        },
+        floatingActionButton = {
+            // دکمه جست‌وجو با عکس فقط در صفحه انبار دیده می‌شود
+            if (pagerState.currentPage == 1) {
+                ExtendedFloatingActionButton(
+                    onClick = { showImageSearch = true },
+                    icon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    text = { Text(searchByPhotoText) }
+                )
+            }
         },
         bottomBar = {
             NavigationBar {
@@ -107,9 +120,13 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     if (showLocationSetup) {
         LocationSetupDialog(onDone = { showLocationSetup = false })
     }
+
+    if (showImageSearch) {
+        ImageSearchDialog(onDismiss = { showImageSearch = false })
+    }
 }
 
-// ---------- هدر: تاریخ و ساعت (دو خط) + دکمه تم + آب‌وهوا (آیکون، دما، شهر) ----------
+// ---------- هدر: دکمه تم، سپس تاریخ و ساعت (دو خط)، و آب‌وهوا ----------
 
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
@@ -161,6 +178,22 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // دکمه تم، قبل از تاریخ و ساعت
+            TextButton(
+                onClick = {
+                    ThemeStore.save(
+                        context,
+                        ThemeStore.settings.copy(mode = if (dark) 1 else 2)
+                    )
+                },
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                contentPadding = PaddingValues(horizontal = 4.dp)
+            ) {
+                Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
+            }
+
             // تاریخ و ساعت
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -175,22 +208,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
                 )
-            }
-
-            // دکمه تم، کنار تاریخ
-            TextButton(
-                onClick = {
-                    ThemeStore.save(
-                        context,
-                        ThemeStore.settings.copy(mode = if (dark) 1 else 2)
-                    )
-                },
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                contentPadding = PaddingValues(horizontal = 4.dp)
-            ) {
-                Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
             }
 
             // آب‌وهوا: دما و شهر در یک ستون، آیکون کشیده‌شده کنارش
