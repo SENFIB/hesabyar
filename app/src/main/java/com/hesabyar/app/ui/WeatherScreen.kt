@@ -3,6 +3,7 @@ package com.hesabyar.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -105,6 +106,32 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
             }
         }
 
+        if (state is WeatherState.Ok && state.info.hours.isNotEmpty()) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            tr("۲۴ ساعت آینده", "Next 24 hours", "الساعات الـ24 القادمة"),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            items(state.info.hours) { h ->
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(h.time, style = MaterialTheme.typography.bodySmall)
+                                    Text(conditionIcon(h.code), style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        "${h.temp.roundToInt()}°",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (state is WeatherState.Ok) {
             item {
                 Text(
@@ -194,7 +221,7 @@ fun LocationSetupDialog(onDone: () -> Unit) {
     }
 }
 
-// جست‌وجوی شهر: با تایپ، لیست پیشنهادی زیر کادر ظاهر می‌شود. با زدن یک شهر، ذخیره می‌شود.
+// جست‌وجوی شهر در سراسر جهان: با تایپ، لیست زیر کادر ظاهر می‌شود و با زدن هر شهر ذخیره می‌شود
 @Composable
 fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     val ctx = LocalContext.current
@@ -205,15 +232,16 @@ fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     var searched by remember { mutableStateOf(false) }
 
     LaunchedEffect(query) {
-        if (query.trim().length < 2) {
+        val q = query.trim()
+        if (q.length < 2) {
             results = emptyList()
             searching = false
             searched = false
             return@LaunchedEffect
         }
         searching = true
-        delay(400)
-        results = searchCities(query, lang)
+        delay(600)
+        results = searchCities(q, lang)
         searching = false
         searched = true
     }
