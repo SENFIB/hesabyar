@@ -170,6 +170,10 @@ private fun PinSetup(onUnlocked: () -> Unit) {
     var p2 by remember { mutableStateOf("") }
     var err by remember { mutableStateOf<String?>(null) }
 
+    // متن خطاها باید اینجا (داخل بدنه Compose) ساخته شوند، نه داخل onClick
+    val shortErr = tr("حداقل ۴ رقم وارد کنید", "Enter at least 4 digits", "أدخل 4 أرقام على الأقل")
+    val mismatchErr = tr("دو رمز یکسان نیستند", "The passwords do not match", "كلمتا المرور غير متطابقتين")
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -214,8 +218,8 @@ private fun PinSetup(onUnlocked: () -> Unit) {
                 val a = p1
                 val b = p2
                 when {
-                    a.length < 4 -> err = tr("حداقل ۴ رقم وارد کنید", "Enter at least 4 digits", "أدخل 4 أرقام على الأقل")
-                    a != b -> err = tr("دو رمز یکسان نیستند", "The passwords do not match", "كلمتا المرور غير متطابقتين")
+                    a.length < 4 -> err = shortErr
+                    a != b -> err = mismatchErr
                     else -> {
                         PinStore.setPin(ctx, a)
                         onUnlocked()
