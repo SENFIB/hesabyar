@@ -20,9 +20,13 @@ import com.hesabyar.app.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -30,8 +34,8 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.TimeZone
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 // ================= مدل‌ها =================
 
@@ -197,10 +201,12 @@ private fun parseWeather(raw: String): WeatherInfo? = try {
     null
 }
 
-// جست‌وجوی شهر در سراسر جهان (OpenStreetMap)
+// ================= جست‌وجوی شهر: ۵ سرویس همزمان =================
+
+// سرویس ۱ و ۵: Nominatim (OpenStreetMap) با زبان برنامه و با انگلیسی
 private fun geocodeList(q: String, lang: String): List<CityResult> {
     val raw = httpGet(
-        "https://nominatim.openstreetmap.org/search?q=$q&format=jsonv2&limit=8" +
+        "https://nominatim.openstreetmap.org/search?q=$q&format=jsonv2&limit=10" +
             "&addressdetails=1&accept-language=$lang"
     )
     val arr = JSONArray(raw)
@@ -223,17 +229,93 @@ private fun geocodeList(q: String, lang: String): List<CityResult> {
     return out
 }
 
-// جست‌وجوی شهر: ابتدا با زبان برنامه، اگر نتیجه نبود با انگلیسی
-suspend fun searchCities(query: String, lang: String): List<CityResult> =
-    withContext(Dispatchers.IO) {
-        val q = URLEncoder.encode(query.trim(), "UTF-8")
-        val first = runCatching { geocodeList(q, lang) }.getOrDefault(emptyList())
-        if (first.isNotEmpty() || lang == "en") {
-            first
-        } else {
-            runCatching { geocodeList(q, "en") }.getOrDefault(emptyList())
+// سرویس ۲: Photon (بر پایه OpenStreetMap، با جست‌وجوی سریع)
+private val PHOTON_TYPES = setOf(
+    "city", "town", "village", "hamlet", "locality", "district", "county", "state", "country"
+)
+
+private fun photonSearch(q: String, lang: String): List<CityResult> {
+    val pl = if (lang == "en" || lang == "de" || lang == "fr" || lang == "it") lang else "default"
+    val raw = httpGet("https://photon.komoot.io/api/?q=$q&limit=10&lang=$pl")
+    val feats = JSONObject(raw).optJSONArray("features") ?: return emptyList()
+    val out = ArrayList<CityResult>()
+    for (i in 0 until feats.length()) {
+        val f = feats.getJSONObject(i)
+        val p = f.getJSONObject("properties")
+        if (p.optString("type") !in PHOTON_TYPES) continue
+        val name = p.optString("name")
+        if (name.isBlank()) continue
+        val c = f.getJSONObject("geometry").getJSONArray("coordinates")
+        val sub = listOf(p.optString("state"), p.optString("country"))
+            .filter { it.isNotBlank() }
+            .joinToString(", ")
+        // در Photon ترتیب مختصات: طول جغرافیایی، عرض جغرافیایی
+        out.add(CityResult(name, c.getDouble(1), c.getDouble(0), sub))
+    }
+    return out
+}
+
+// سرویس ۳: جست‌وجوی خود اندروید (Geocoder)
+@Suppress("DEPRECATION")
+private fun androidGeocoderSearch(ctx: Context, q: String): List<CityResult> {
+    if (!Geocoder.isPresent()) return emptyList()
+    val list: List<Address> = Geocoder(ctx, Locale.getDefault()).getFromLocationName(q, 10) ?: return emptyList()
+    return list.mapNotNull { a ->
+        val name = a.locality ?: a.subAdminArea ?: a.adminArea ?: return@mapNotNull null
+        CityResult(
+            name = name,
+            lat = a.latitude,
+            lon = a.longitude,
+            subtitle = listOfNotNull(a.adminArea, a.countryName).distinct().joinToString(", ")
+        )
+    }
+}
+
+// سرویس ۴: Open-Meteo Geocoding (شهرهای بزرگ و پرجمعیت جهان)
+private fun openMeteoSearch(q: String): List<CityResult> {
+    val raw = httpGet("https://geocoding-api.open-meteo.com/v1/search?name=$q&count=10&language=en&format=json")
+    val arr = JSONObject(raw).optJSONArray("results") ?: return emptyList()
+    return (0 until arr.length()).map { i ->
+        val o = arr.getJSONObject(i)
+        val sub = listOf(o.optString("admin1"), o.optString("country"))
+            .filter { it.isNotBlank() }
+            .joinToString(", ")
+        CityResult(
+            name = o.getString("name"),
+            lat = o.getDouble("latitude"),
+            lon = o.getDouble("longitude"),
+            subtitle = sub
+        )
+    }
+}
+
+// جست‌وجو از همه سرویس‌ها همزمان. نتیجه‌ها ادغام، تکراری‌ها حذف و حداکثر ۱۰ شهر نمایش داده می‌شود.
+// اگر یک سرویس خراب باشد یا دیر جواب دهد، بقیه نتیجه‌ها نشان داده می‌شوند.
+suspend fun searchCities(ctx: Context, query: String, lang: String): List<CityResult> = coroutineScope {
+    val text = query.trim()
+    val q = URLEncoder.encode(text, "UTF-8")
+
+    val sources: List<() -> List<CityResult>> = listOf(
+        { geocodeList(q, lang) },
+        { photonSearch(q, lang) },
+        { androidGeocoderSearch(ctx, text) },
+        { openMeteoSearch(q) },
+        { geocodeList(q, "en") }
+    )
+
+    val jobs = sources.map { source ->
+        async(Dispatchers.IO) {
+            withTimeoutOrNull(8000L) { runCatching { source() }.getOrNull() } ?: emptyList()
         }
     }
+    val merged = jobs.awaitAll().flatten()
+
+    // حذف تکراری: شهرهایی که مختصات تقریباً یکسان دارند (حدود ۱۰ کیلومتر)
+    val seen = HashSet<String>()
+    merged
+        .filter { c -> seen.add("${(c.lat * 10).roundToInt()}:${(c.lon * 10).roundToInt()}") }
+        .take(10)
+}
 
 // ================= وضعیت هوا به زبان‌های مختلف =================
 
@@ -251,15 +333,18 @@ private fun condFor(code: Int): Cond = when (code) {
     else -> Cond("•", "نامشخص", "غير معروف", "Unknown")
 }
 
-fun conditionText(code: Int, lang: String): String {
+// فقط متن وضعیت (بدون آیکون)
+fun conditionWord(code: Int, lang: String): String {
     val c = condFor(code)
-    val word = when (lang) {
+    return when (lang) {
         "fa" -> c.fa
         "ar" -> c.ar
         else -> c.en
     }
-    return "${c.icon} $word"
 }
+
+fun conditionText(code: Int, lang: String): String =
+    "${condFor(code).icon} ${conditionWord(code, lang)}"
 
 fun conditionIcon(code: Int): String = condFor(code).icon
 
