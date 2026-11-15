@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="v3_lock_set">یک رمز عبور بسازید (حداقل ۴ رقم)</string>
+    <string name="v3_lock_confirm">رمز عبور را دوباره وارد کنید</string>
+    <string name="v3_lock_enter">رمز عبور را وارد کنید</string>
+    <string name="v3_lock_next">ادامه</string>
+    <string name="v3_lock_save">ثبت رمز عبور</string>
+    <string name="v3_lock_unlock">ورود</string>
+    <string name="v3_lock_wrong">رمز عبور اشتباه است</string>
+    <string name="v3_lock_mismatch">رمزها یکسان نیستند. دوباره شروع کنید.</string>
+</resources>
