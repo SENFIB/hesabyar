@@ -428,6 +428,11 @@ fun ChecksTab(regionType: CalendarType) {
     var level by rememberSaveable { mutableStateOf(2) }
     var errText by remember { mutableStateOf<String?>(null) }
 
+    // متن خطاها باید اینجا (داخل بدنه Compose) ساخته شوند، نه داخل onClick
+    val errNameText = tr("نام طرف حساب را وارد کنید", "Enter the party name", "أدخل اسم الطرف")
+    val errAmountText = tr("مبلغ معتبر وارد کنید", "Enter a valid amount", "أدخل مبلغاً صحيحاً")
+    val errDateText = tr("تاریخ را به شکل 2025/01/31 بنویسید", "Write the date like 2025/01/31", "اكتب التاريخ مثل 2025/01/31")
+
     val alerts = cheques.filter { !it.done && now >= it.dueMillis - it.remindDays * DAY_MS }
     val hasLevel1 = alerts.any { it.level == 1 }
 
@@ -528,9 +533,9 @@ fun ChecksTab(regionType: CalendarType) {
                             val amount = amountText.toLongOrNull()
                             val due = parseBackupDay(dueText)
                             when {
-                                person.isBlank() -> errText = tr("نام طرف حساب را وارد کنید", "Enter the party name", "أدخل اسم الطرف")
-                                amount == null || amount <= 0L -> errText = tr("مبلغ معتبر وارد کنید", "Enter a valid amount", "أدخل مبلغاً صحيحاً")
-                                due == null -> errText = tr("تاریخ را به شکل 2025/01/31 بنویسید", "Write the date like 2025/01/31", "اكتب التاريخ مثل 2025/01/31")
+                                person.isBlank() -> errText = errNameText
+                                amount == null || amount <= 0L -> errText = errAmountText
+                                due == null -> errText = errDateText
                                 else -> {
                                     ChequeStore.add(
                                         ctx,
