@@ -450,3 +450,254 @@ private fun LanguagePage() {
         }
     }
 }
+
+// ---------- رمز و قفل ----------
+
+@Composable
+private fun LockPage() {
+    val ctx = LocalContext.current
+    val delays = delayLabels()
+    var enabled by remember { mutableStateOf(PinStore.isEnabled(ctx)) }
+    var delayIdx by remember { mutableStateOf(PinStore.delayIndex(ctx)) }
+    var showSetPin by rememberSaveable { mutableStateOf(false) }
+    var showCheckPin by rememberSaveable { mutableStateOf(false) }
+
+    val checkTitle = tr(
+        "برای خاموش کردن قفل، رمز فعلی را وارد کنید",
+        "Enter the current password to turn the lock off",
+        "أدخل كلمة المرور الحالية لإيقاف القفل"
+    )
+
+    SectionCard(tr("قفل برنامه", "App lock", "قفل التطبيق")) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = tr("قفل با رمز عبور", "Lock with password", "القفل بكلمة المرور"),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = enabled,
+                onCheckedChange = { wantOn ->
+                    if (wantOn) showSetPin = true else showCheckPin = true
+                }
+            )
+        }
+        Text(
+            text = tr(
+                "اختیاری است. اگر خاموش باشد، برنامه بدون رمز باز می‌شود.",
+                "Optional. When off, the app opens without a password.",
+                "اختياري. عند الإيقاف يفتح التطبيق بدون كلمة مرور."
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (enabled) {
+            Text(
+                text = tr(
+                    "با اثر انگشت باز می‌شود. رمز عبور فقط با دکمه «ورود با رمز عبور» استفاده می‌شود.",
+                    "Opens with fingerprint. The password is used only with the “Use password” button.",
+                    "يُفتح بالبصمة. تُستخدم كلمة المرور فقط بزر «استخدام كلمة المرور»."
+                ),
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedButton(
+                onClick = { showSetPin = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(tr("تغییر رمز عبور", "Change password", "تغيير كلمة المرور"))
+            }
+        }
+    }
+
+    if (enabled) {
+        SectionCard(tr("زمان قفل شدن", "Lock timing", "وقت القفل")) {
+            Text(
+                text = tr(
+                    "بعد از بسته شدن یا رفتن برنامه به پس‌زمینه:",
+                    "After the app is closed or sent to the background:",
+                    "بعد إغلاق التطبيق أو نقله إلى الخلفية:"
+                ),
+                style = MaterialTheme.typography.bodySmall
+            )
+            ChoiceRow(labels = delays, selected = delayIdx) { i ->
+                PinStore.setDelayIndex(ctx, i)
+                delayIdx = i
+            }
+        }
+    }
+
+    if (showSetPin) {
+        Dialog(
+            onDismissRequest = { showSetPin = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                PinSetup(
+                    onDone = {
+                        PinStore.setEnabled(ctx, true)
+                        enabled = true
+                        showSetPin = false
+                    },
+                    onCancel = { showSetPin = false }
+                )
+            }
+        }
+    }
+
+    if (showCheckPin) {
+        PinCheckDialog(
+            title = checkTitle,
+            onDismiss = { showCheckPin = false },
+            onOk = {
+                PinStore.setEnabled(ctx, false)
+                enabled = false
+                showCheckPin = false
+            }
+        )
+    }
+}
+
+// ---------- ساعت و تاریخ ----------
+
+@Composable
+private fun ClockPage(vm: MainViewModel) {
+    val deviceClock by vm.deviceClock.collectAsState()
+    val sourceLabels = timeSourceLabels()
+
+    SectionCard(tr("منبع تاریخ و ساعت هدر", "Header date and time source", "مصدر التاريخ والوقت في الرأس")) {
+        ChoiceRow(labels = sourceLabels, selected = if (deviceClock) 1 else 0) { i ->
+            vm.setDeviceClock(i == 1)
+        }
+    }
+
+    SectionCard(tr("ساعت ۱۲ یا ۲۴ ساعته", "12 or 24-hour clock", "ساعة ١٢ أو ٢٤")) {
+        ClockFormatRow()
+    }
+}
+
+// ---------- تقویم سال مالی ----------
+
+@Composable
+private fun FiscalPage(vm: MainViewModel) {
+    val fiscal by vm.fiscal.collectAsState()
+    val labels = fiscalLabels()
+    SectionCard(tr("تقویم سال مالی", "Fiscal calendar", "تقويم السنة المالية")) {
+        ChoiceRow(
+            labels = labels,
+            selected = FISCAL_VALUES.indexOf(fiscal).coerceAtLeast(0)
+        ) { i ->
+            vm.setFiscal(FISCAL_VALUES[i])
+        }
+    }
+}
+
+// ---------- آب‌وهوا ----------
+
+@Composable
+private fun WeatherPage() {
+    val ctx = LocalContext.current
+    val weatherState = WeatherStore.state
+    val place = (weatherState as? WeatherState.Ok)?.place ?: WeatherStore.savedPlace(ctx)
+    var showManual by rememberSaveable { mutableStateOf(false) }
+
+    val gps = rememberGpsAction(
+        label = tr("موقعیت من", "My location", "موقعي"),
+        onDone = {},
+        onDenied = { showManual = true }
+    )
+
+    val currentText = tr("شهر فعلی: ", "Current city: ", "المدينة الحالية: ") +
+        place.ifBlank { tr("تنظیم نشده", "Not set", "غير محدد") }
+
+    SectionCard(tr("شهر و موقعیت", "City and location", "المدينة والموقع")) {
+        Text(currentText, style = MaterialTheme.typography.bodyMedium)
+        Button(onClick = gps, modifier = Modifier.fillMaxWidth()) {
+            Text(tr("استفاده از موقعیت من (GPS)", "Use my location (GPS)", "استخدام موقعي (GPS)"))
+        }
+        OutlinedButton(onClick = { showManual = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(tr("جست‌وجوی شهر", "Search city", "البحث عن مدينة"))
+        }
+    }
+
+    if (showManual) {
+        ManualCityDialog(
+            onDismiss = { showManual = false },
+            onSaved = { showManual = false }
+        )
+    }
+}
+
+// ---------- کمک‌های صفحه ----------
+
+@Composable
+private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                content()
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChoiceRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        labels.forEachIndexed { i, label ->
+            FilterChip(
+                selected = selected == i,
+                onClick = { onSelect(i) },
+                label = { Text(label) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PaletteRow(selected: Int, lang: String, onSelect: (Int) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        PALETTES.forEachIndexed { i, palette ->
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clickable { onSelect(i) }
+                    .padding(4.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(palette.light.primary)
+                        .border(
+                            width = if (selected == i) 3.dp else 0.dp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            shape = CircleShape
+                        )
+                )
+                Text(
+                    text = palette.name.of(lang),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
