@@ -11,150 +11,170 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.os.LocaleListCompat
-import com.hesabyar.app.R
 
 @Composable
 fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
-    val context = LocalContext.current
+    val ctx = LocalContext.current
     val lang = currentLang()
-    val fiscalSaved by vm.fiscal.collectAsState()
+    val ts = ThemeStore.settings
+    val fiscal by vm.fiscal.collectAsState()
     val deviceClock by vm.deviceClock.collectAsState()
-    val currentFiscal = fiscalSaved ?: regionType
-    val s = ThemeStore.settings
-    val weather = WeatherStore.state
 
-    var showManual by remember { mutableStateOf(false) }
-    var gpsMessage by remember { mutableStateOf<String?>(null) }
+    val weatherState = WeatherStore.state
+    val place = (weatherState as? WeatherState.Ok)?.place ?: WeatherStore.savedPlace(ctx)
 
-    val gpsLabel = tr("موقعیت من", "My location", "موقعي")
-    val gpsFail = tr(
-        "GPS فعال نیست یا اجازه داده نشد. شهر را دستی وارد کنید.",
-        "GPS is off or permission was denied. Enter the city manually.",
-        "GPS غير مفعّل أو لم يُسمح به. أدخل المدينة يدوياً."
+    var showManual by rememberSaveable { mutableStateOf(false) }
+    val gps = rememberGpsAction(
+        label = tr("موقعیت من", "My location", "موقعي"),
+        onDone = {},
+        onDenied = { showManual = true }
     )
-    val placeName = (weather as? WeatherState.Ok)?.place
-        ?: WeatherStore.savedPlace(context)
-        ?: "—"
 
-    val gps = rememberGpsAction(gpsLabel) { ok ->
-        gpsMessage = if (ok) null else gpsFail
+    val modeLabels = listOf(
+        tr("بر اساس گوشی", "Follow phone", "حسب الهاتف"),
+        tr("روشن", "Light", "فاتح"),
+        tr("تاریک", "Dark", "داكن")
+    )
+    val fontLabels = listOf(
+        tr("وزیرمتن (پیش‌فرض)", "Vazirmatn (default)", "وزير متن (افتراضي)"),
+        tr("ساده", "Sans", "بسيط"),
+        tr("سریف", "Serif", "سيريف"),
+        tr("ماشینی", "Monospace", "أحادي")
+    )
+    val sizeLabels = listOf(
+        tr("کوچک", "Small", "صغير"),
+        tr("متوسط", "Medium", "متوسط"),
+        tr("بزرگ", "Large", "كبير"),
+        tr("خیلی بزرگ", "Extra large", "كبير جدًا")
+    )
+    val cornerLabels = listOf(
+        tr("تیز", "Sharp", "حاد"),
+        tr("معمولی", "Normal", "عادي"),
+        tr("گرد", "Round", "دائري")
+    )
+    val timeLabels = listOf(
+        tr("خودکار (بر اساس زبان)", "Automatic (by language)", "تلقائي (حسب اللغة)"),
+        tr("تنظیمات گوشی", "Phone settings", "إعدادات الهاتف")
+    )
+    val fiscalValues = listOf(CalendarType.GREGORIAN, CalendarType.PERSIAN, CalendarType.HIJRI)
+    val fiscalLabels = listOf(
+        tr("میلادی", "Gregorian", "ميلادي"),
+        tr("شمسی", "Persian", "شمسي"),
+        tr("قمری", "Hijri", "هجري")
+    )
+    val langIndex = when (lang) {
+        "fa" -> 0
+        "ar" -> 2
+        else -> 1
     }
-
-    val modeLabels = MODE_LABELS.labelsFor(lang)
-    val fontLabels = FONT_LABELS.labelsFor(lang)
-    val scaleLabels = SCALE_LABELS.labelsFor(lang)
-    val cornerLabels = CORNER_LABELS.labelsFor(lang)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // زبان
-        SectionCard(tr("زبان", "Language", "اللغة")) {
-            OptionRow(label = "فارسی", selected = lang == "fa") { setLanguage("fa") }
-            OptionRow(label = "English", selected = lang == "en") { setLanguage("en") }
-            OptionRow(label = "العربية", selected = lang == "ar") { setLanguage("ar") }
-        }
-
-        // تم روشن / تاریک
-        SectionCard(tr("حالت نمایش", "Display mode", "وضع العرض")) {
-            ChoiceRow(options = modeLabels, selected = s.mode) { i ->
-                ThemeStore.save(context, s.copy(mode = i))
+        SectionCard(title = tr("زبان", "Language", "اللغة")) {
+            ChoiceRow(
+                labels = listOf("فارسی", "English", "العربية"),
+                selected = langIndex
+            ) { i ->
+                val tag = when (i) {
+                    0 -> "fa"
+                    2 -> "ar"
+                    else -> "en"
+                }
+                AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(tag))
             }
         }
 
-        // طرح رنگی
-        SectionCard(tr("طرح رنگی", "Color scheme", "المخطط اللوني")) {
-            PaletteRow(selected = s.paletteIndex, lang = lang) { i ->
-                ThemeStore.save(context, s.copy(paletteIndex = i))
+        SectionCard(title = tr("حالت نمایش", "Display mode", "وضع العرض")) {
+            ChoiceRow(labels = modeLabels, selected = ts.mode) { i ->
+                ThemeStore.save(ctx, ts.copy(mode = i))
             }
         }
 
-        // فونت
-        SectionCard(tr("فونت", "Font", "الخط")) {
-            ChoiceRow(options = fontLabels, selected = s.fontIndex) { i ->
-                ThemeStore.save(context, s.copy(fontIndex = i))
+        SectionCard(title = tr("طرح رنگی", "Color scheme", "نظام الألوان")) {
+            PaletteRow(
+                selected = ts.paletteIndex,
+                lang = lang
+            ) { i ->
+                ThemeStore.save(ctx, ts.copy(paletteIndex = i))
             }
         }
 
-        // اندازه فونت
-        SectionCard(tr("اندازه فونت", "Font size", "حجم الخط")) {
-            ChoiceRow(options = scaleLabels, selected = s.scaleIndex) { i ->
-                ThemeStore.save(context, s.copy(scaleIndex = i))
+        SectionCard(title = tr("فونت", "Font", "الخط")) {
+            ChoiceRow(labels = fontLabels, selected = ts.fontIndex) { i ->
+                ThemeStore.save(ctx, ts.copy(fontIndex = i))
             }
         }
 
-        // شکل گوشه کارت‌ها
-        SectionCard(tr("شکل کارت‌ها", "Card shape", "شكل البطاقات")) {
-            ChoiceRow(options = cornerLabels, selected = s.cornerIndex) { i ->
-                ThemeStore.save(context, s.copy(cornerIndex = i))
+        SectionCard(title = tr("اندازه فونت", "Font size", "حجم الخط")) {
+            ChoiceRow(labels = sizeLabels, selected = ts.scaleIndex) { i ->
+                ThemeStore.save(ctx, ts.copy(scaleIndex = i))
             }
         }
 
-        // زمان و تاریخ هدر
-        SectionCard(tr("زمان و تاریخ هدر", "Header date and time", "الوقت والتاريخ في الرأس")) {
-            OptionRow(
-                label = tr("خودکار (بر اساس زبان)", "Automatic (based on language)", "تلقائي (حسب اللغة)"),
-                selected = !deviceClock
-            ) { vm.setDeviceClock(false) }
-            OptionRow(
-                label = tr("تنظیمات گوشی", "Phone settings", "إعدادات الهاتف"),
-                selected = deviceClock
-            ) { vm.setDeviceClock(true) }
+        SectionCard(title = tr("شکل کارت‌ها", "Card shape", "شكل البطاقات")) {
+            ChoiceRow(labels = cornerLabels, selected = ts.cornerIndex) { i ->
+                ThemeStore.save(ctx, ts.copy(cornerIndex = i))
+            }
         }
 
-        // تقویم سال مالی
-        SectionCard(tr("تقویم سال مالی", "Fiscal year calendar", "التقويم المالي")) {
+        SectionCard(title = tr("زمان و تاریخ هدر", "Header date and time", "تاريخ ووقت الرأس")) {
+            ChoiceRow(
+                labels = timeLabels,
+                selected = if (deviceClock) 1 else 0
+            ) { i ->
+                vm.setDeviceClock(i == 1)
+            }
+        }
+
+        SectionCard(title = tr("ساعت ۱۲ یا ۲۴ ساعته", "12 or 24-hour clock", "ساعة ١٢ أو ٢٤")) {
+            ClockFormatRow()
+        }
+
+        SectionCard(title = tr("تقویم سال مالی", "Fiscal calendar", "تقويم السنة المالية")) {
+            ChoiceRow(
+                labels = fiscalLabels,
+                selected = fiscalValues.indexOf(fiscal).coerceAtLeast(0)
+            ) { i ->
+                vm.setFiscal(fiscalValues[i])
+            }
+        }
+
+        SectionCard(title = tr("آب‌وهوا و موقعیت", "Weather and location", "الطقس والموقع")) {
             Text(
-                text = stringResource(R.string.fiscal_hint),
-                style = MaterialTheme.typography.bodySmall
-            )
-            CalendarType.entries.forEach { type ->
-                OptionRow(
-                    label = stringResource(type.label),
-                    selected = currentFiscal == type
-                ) { vm.setFiscal(type) }
-            }
-        }
-
-        // موقعیت آب‌وهوا
-        SectionCard(tr("آب‌وهوا و موقعیت", "Weather and location", "الطقس والموقع")) {
-            Text(
-                text = tr("شهر فعلی: ", "Current city: ", "المدينة الحالية: ") + placeName,
+                text = tr("شهر فعلی: ", "Current city: ", "المدينة الحالية: ") +
+                    place.ifBlank { tr("تنظیم نشده", "Not set", "غير محدد") },
                 style = MaterialTheme.typography.bodyMedium
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = gps) {
-                    Text(tr("GPS", "GPS", "GPS"))
-                }
-                OutlinedButton(onClick = { showManual = true }) {
-                    Text(tr("وارد کردن شهر", "Enter city", "إدخال المدينة"))
-                }
+            Button(onClick = gps, modifier = Modifier.fillMaxWidth()) {
+                Text(tr("استفاده از موقعیت من (GPS)", "Use my location (GPS)", "استخدام موقعي (GPS)"))
             }
-            gpsMessage?.let {
-                Text(it, color = MaterialTheme.colorScheme.error)
+            OutlinedButton(onClick = { showManual = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(tr("جست‌وجوی شهر", "Search city", "البحث عن مدينة"))
             }
         }
 
-        // بازگشت به پیش‌فرض
+        BackupSection()
+
         OutlinedButton(
-            onClick = { ThemeStore.save(context, ThemeSettings()) },
+            onClick = { ThemeStore.save(ctx, ThemeSettings()) },
             modifier = Modifier.fillMaxWidth()
         ) {
-            ClockFormatRow()
-            BackupSection()
             Text(tr("بازگشت به تنظیمات پیش‌فرض", "Reset to defaults", "استعادة الإعدادات الافتراضية"))
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 
     if (showManual) {
@@ -165,47 +185,29 @@ fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
     }
 }
 
-private fun setLanguage(tag: String) {
-    AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(tag))
-}
-
 @Composable
 private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Spacer(modifier = Modifier.height(4.dp))
-            content()
-        }
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                content()
+            }
+        )
     }
 }
 
 @Composable
-private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        Text(label)
-    }
-}
-
-@Composable
-private fun ChoiceRow(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+private fun ChoiceRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        options.forEachIndexed { i, label ->
+        labels.forEachIndexed { i, label ->
             FilterChip(
                 selected = selected == i,
                 onClick = { onSelect(i) },
@@ -223,7 +225,7 @@ private fun PaletteRow(selected: Int, lang: String, onSelect: (Int) -> Unit) {
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        PALETTES.forEachIndexed { i, p ->
+        PALETTES.forEachIndexed { i, palette ->
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
@@ -232,16 +234,19 @@ private fun PaletteRow(selected: Int, lang: String, onSelect: (Int) -> Unit) {
             ) {
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(44.dp)
                         .clip(CircleShape)
-                        .background(p.light.primary)
+                        .background(palette.light.primary)
                         .border(
-                            width = if (i == selected) 3.dp else 0.dp,
+                            width = if (selected == i) 3.dp else 0.dp,
                             color = MaterialTheme.colorScheme.onSurface,
                             shape = CircleShape
                         )
                 )
-                Text(p.name.of(lang), style = MaterialTheme.typography.labelSmall)
+                Text(
+                    text = palette.name.of(lang),
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }
