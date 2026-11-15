@@ -66,11 +66,12 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
     val titles = listOf(
         tr("تراکنش‌ها", "Transactions", "المعاملات"),
         tr("گزارش‌ها", "Reports", "التقارير"),
-        tr("چک و سفته", "Cheques & notes", "الشيكات والسندات")
+        tr("چک و سفته", "Cheques & notes", "الشيكات والسندات"),
+        tr("پیامک‌ها", "SMS", "الرسائل")
     )
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // سه زیرتب با عرض برابر
+        // چهار زیرتب با عرض برابر
         TabRow(selectedTabIndex = tab) {
             titles.forEachIndexed { i, title ->
                 Tab(
@@ -91,7 +92,8 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
             when (tab) {
                 0 -> LedgerScreen(vm, regionType)
                 1 -> ReportsTab(vm, regionType)
-                else -> ChecksTab(regionType)
+                2 -> ChecksTab(regionType)
+                else -> SmsTab(vm)
             }
         }
     }
