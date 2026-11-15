@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ThemeStore.load(this)
+        ClockFormat.load(this)
         setContent {
             HesabyarTheme {
                 AppBackground {
