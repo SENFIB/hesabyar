@@ -1,11 +1,14 @@
 package com.hesabyar.app.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
@@ -18,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -44,6 +48,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val lang = currentLang()
     val regionType = CalendarType.forLanguage(lang)
     val deviceClock by vm.deviceClock.collectAsState()
+    val tabsTop = ThemeStore.settings.tabsTop
     val pagerState = rememberPagerState(pageCount = { 4 })
     val scope = rememberCoroutineScope()
     var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
@@ -54,65 +59,52 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
         if (WeatherStore.hasLocation(context)) WeatherStore.refresh(context)
     }
 
-    fun goTo(page: Int) {
+    val onTab: (Int) -> Unit = { page ->
         scope.launch { pagerState.animateScrollToPage(page) }
     }
 
-    Scaffold(
-        containerColor = Color.Transparent,
-        topBar = {
-            ClockHeader(regionType = regionType, deviceClock = deviceClock)
-        },
-        floatingActionButton = {
-            // دکمه جست‌وجو با عکس فقط در صفحه انبار دیده می‌شود
+    Column(modifier = Modifier.fillMaxSize()) {
+        ClockHeader(regionType = regionType, deviceClock = deviceClock)
+
+        if (tabsTop) {
+            ThemePartScope(ThemePart.TABS) {
+                AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
+            }
+        }
+
+        Box(modifier = Modifier
+            .weight(1f)
+            .fillMaxWidth()
+        ) {
+            ThemePartScope(ThemePart.TEXT) {
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize()
+                ) { page ->
+                    when (page) {
+                        0 -> AccountingScreen(vm, regionType)
+                        1 -> InventoryScreen(vm, regionType)
+                        2 -> WeatherScreen(vm, regionType)
+                        else -> SettingsScreen(vm, regionType)
+                    }
+                }
+            }
+
             if (pagerState.currentPage == 1) {
                 ExtendedFloatingActionButton(
                     onClick = { showImageSearch = true },
                     icon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    text = { Text(searchByPhotoText) }
-                )
-            }
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = pagerState.currentPage == 0,
-                    onClick = { goTo(0) },
-                    icon = { Icon(Icons.Filled.Create, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_ledger)) }
-                )
-                NavigationBarItem(
-                    selected = pagerState.currentPage == 1,
-                    onClick = { goTo(1) },
-                    icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_store)) }
-                )
-                NavigationBarItem(
-                    selected = pagerState.currentPage == 2,
-                    onClick = { goTo(2) },
-                    icon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_weather)) }
-                )
-                NavigationBarItem(
-                    selected = pagerState.currentPage == 3,
-                    onClick = { goTo(3) },
-                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_settings)) }
+                    text = { Text(searchByPhotoText) },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
                 )
             }
         }
-    ) { padding ->
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) { page ->
-            when (page) {
-                0 -> AccountingScreen(vm, regionType)
-                1 -> InventoryScreen(vm, regionType)
-                2 -> WeatherScreen(vm, regionType)
-                else -> SettingsScreen(vm, regionType)
+
+        if (!tabsTop) {
+            ThemePartScope(ThemePart.TABS) {
+                AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
             }
         }
     }
@@ -126,7 +118,53 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     }
 }
 
-// ---------- هدر: دکمه تم، سپس تاریخ و ساعت (دو خط)، و آب‌وهوا ----------
+// ---------- نوار تب‌ها (شیشه‌ای، بالا یا پایین) ----------
+
+@Composable
+fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
+    val base = partColor(ThemePart.TABS, MaterialTheme.colorScheme.surface)
+    val on = onColorFor(base)
+    val tabs = listOf(
+        Icons.Filled.Create to stringResource(R.string.tab_ledger),
+        Icons.Filled.Home to stringResource(R.string.tab_store),
+        Icons.Filled.LocationOn to stringResource(R.string.tab_weather),
+        Icons.Filled.Settings to stringResource(R.string.tab_settings)
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .glass(base, RoundedCornerShape(22.dp))
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        tabs.forEachIndexed { i, tab ->
+            val isSel = selected == i
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (isSel) on.copy(alpha = 0.16f) else Color.Transparent)
+                    .clickable { onSelect(i) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(tab.first, contentDescription = null, tint = on)
+                Text(
+                    text = tab.second,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = on,
+                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+// ---------- هدر شیشه‌ای: دکمه تم، تاریخ و ساعت، آب‌وهوا ----------
 
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
@@ -149,7 +187,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
 
     val dark = isDarkNow()
     val weather = WeatherStore.state
-
     val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
 
     val tempText = when (weather) {
@@ -167,67 +204,71 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
         WeatherState.None -> tr("موقعیت تنظیم نشده", "Location not set", "الموقع غير محدد")
     }
 
-    Surface(
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        shadowElevation = 4.dp
-    ) {
-        Row(
+    val headerColor = partColor(ThemePart.HEADER, currentModeColors().primary)
+    val onHeader = onColorFor(headerColor)
+
+    ThemePartScope(ThemePart.HEADER) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .glass(headerColor, RoundedCornerShape(24.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            // دکمه تم، قبل از تاریخ و ساعت
-            TextButton(
-                onClick = {
-                    ThemeStore.save(
-                        context,
-                        ThemeStore.settings.copy(mode = if (dark) 1 else 2)
-                    )
-                },
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                contentPadding = PaddingValues(horizontal = 4.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
-            }
+                TextButton(
+                    onClick = {
+                        ThemeStore.save(
+                            context,
+                            ThemeStore.settings.copy(mode = if (dark) 1 else 2)
+                        )
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = onHeader),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
+                ) {
+                    Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
+                }
 
-            // تاریخ و ساعت
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = dateText,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = timeText,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
-            }
-
-            // آب‌وهوا: دما و شهر در یک ستون، آیکون کشیده‌شده کنارش
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(horizontalAlignment = Alignment.End) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = tempText,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold
+                        text = dateText,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = onHeader,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = placeText,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.widthIn(max = 150.dp)
+                        text = timeText,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = onHeader,
+                        maxLines = 1
                     )
                 }
-                Spacer(modifier = Modifier.width(6.dp))
-                WeatherGlyph(code = glyphCode, size = 40.dp)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = tempText,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = onHeader
+                        )
+                        Text(
+                            text = placeText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onHeader,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 150.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    WeatherGlyph(code = glyphCode, size = 40.dp)
+                }
             }
         }
     }
