@@ -2,19 +2,13 @@ package com.hesabyar.app.ui
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -24,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -31,10 +27,66 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 private const val NOTICE_PREFS = "hesabyar_prefs"
 private const val NOTICE_KEY = "storage_notice_seen"
+
+private const val BACKUP_APP = "hesabyar"
+private const val BACKUP_FORMAT = 2
+private const val IMAGE_DIR = "inv_images"
+private const val IMAGE_ENTRY_PREFIX = "images/"
+private const val DB_MAIN = "hesabyar.db"
+private const val DB_CHEQUES = "hesabyar_cheques.db"
+private const val DB_INVENTORY = "hesabyar_inventory.db"
+private const val REASON_NOT_BACKUP = "not_backup"
+private const val REASON_NEWER = "newer"
+
+private val BACKUP_DBS = listOf(DB_MAIN, DB_CHEQUES, DB_INVENTORY)
+private val BACKUP_PREFS = listOf("hesabyar_prefs", "hesabyar_theme", "hesabyar_weather")
+private val SKIP_PREF_KEYS = setOf("storage_notice_seen", "geo_cache", "geo_cache_key")
+
+// ستون‌های تاریخ که بازه زمانی روی آن‌ها اعمال می‌شود
+private val DATE_COLUMNS = mapOf("transactions" to "dateMillis", "sales" to "date_millis")
+
+// جدول‌هایی که در فایل اکسل شیت جدا می‌گیرند
+private val EXCEL_SHEETS = mapOf(
+    "transactions" to "تراکنش‌ها",
+    "products" to "محصولات",
+    "cheques" to "چک و سفته",
+    "items" to "انبار",
+    "sales" to "فروش"
+)
+
+private val COLUMN_LABELS = mapOf(
+    "id" to "شناسه",
+    "title" to "عنوان",
+    "amount" to "مبلغ",
+    "isIncome" to "نوع",
+    "category" to "دسته‌بندی",
+    "dateMillis" to "تاریخ",
+    "name" to "نام",
+    "code" to "کد",
+    "price" to "قیمت",
+    "stock" to "موجودی",
+    "kind" to "نوع سند",
+    "direction" to "جهت",
+    "person" to "طرف حساب",
+    "dueMillis" to "سررسید",
+    "remindDays" to "یادآوری (روز)",
+    "level" to "درجه اعلان",
+    "done" to "انجام شد",
+    "description" to "توضیحات",
+    "threshold" to "حد هشدار",
+    "views" to "تعداد بازدید",
+    "item_id" to "شناسه کالا",
+    "item_name" to "نام کالا",
+    "qty" to "تعداد",
+    "unit_price" to "قیمت واحد",
+    "total" to "جمع",
+    "date_millis" to "تاریخ"
+)
 
 // ================= مدل‌ها و بازه زمانی =================
 
@@ -42,22 +94,15 @@ enum class BackupPeriod { DAILY, WEEKLY, MONTHLY, YEARLY, ALL, CUSTOM }
 
 data class BackupRange(val from: Long, val to: Long)
 
-data class BackupTx(
-    val id: Long,
-    val title: String,
-    val amount: Long,
-    val isIncome: Boolean,
-    val category: String,
-    val dateMillis: Long
+private enum class ExportKind { FULL, JSON, EXCEL }
+
+private class BackupBundle(
+    val header: JSONObject,
+    val full: JSONObject,
+    val images: Map<String, File>
 )
 
-data class BackupProduct(
-    val id: Long,
-    val name: String,
-    val code: String?,
-    val price: Long,
-    val stock: Int
-)
+private class BackupFileException(val reason: String) : Exception(reason)
 
 private fun startOfDay(c: Calendar): Long {
     c.set(Calendar.HOUR_OF_DAY, 0)
@@ -111,167 +156,252 @@ fun parseBackupDay(text: String): Long? = try {
     null
 }
 
-// ================= خواندن و نوشتن دیتابیس =================
-// از SQL مستقیم روی فایل دیتابیس Room استفاده می‌کنیم تا به DAOهای قبلی وابسته نباشیم.
+// ================= ساخت بکاپ =================
 
-private fun openDb(ctx: Context, write: Boolean): SQLiteDatabase {
-    val path = ctx.getDatabasePath("hesabyar.db").absolutePath
-    val flags = if (write) SQLiteDatabase.OPEN_READWRITE else SQLiteDatabase.OPEN_READONLY
-    return SQLiteDatabase.openDatabase(path, null, flags)
+private fun dbFile(ctx: Context, name: String): File = ctx.getDatabasePath(name)
+
+private fun openDbFile(ctx: Context, name: String, write: Boolean): SQLiteDatabase {
+    val file = dbFile(ctx, name)
+    file.parentFile?.mkdirs()
+    return if (write) {
+        SQLiteDatabase.openOrCreateDatabase(file, null)
+    } else {
+        SQLiteDatabase.openDatabase(file.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+    }
 }
 
-fun readTxForBackup(ctx: Context, range: BackupRange?): List<BackupTx> {
-    val db = openDb(ctx, false)
-    try {
-        val base = "SELECT id, title, amount, isIncome, category, dateMillis FROM transactions"
-        val cursor = if (range == null) db.rawQuery("$base ORDER BY dateMillis", null) else db.rawQuery("$base WHERE dateMillis BETWEEN ? AND ? ORDER BY dateMillis", arrayOf(range.from.toString(), range.to.toString()))
-        cursor.use { c ->
-            val out = ArrayList<BackupTx>()
-            while (c.moveToNext()) {
-                out.add(
-                    BackupTx(
-                        id = c.getLong(0),
-                        title = c.getString(1) ?: "",
-                        amount = c.getLong(2),
-                        isIncome = c.getInt(3) != 0,
-                        category = c.getString(4) ?: "",
-                        dateMillis = c.getLong(5)
-                    )
-                )
+private fun tableNames(db: SQLiteDatabase): List<String> {
+    val out = ArrayList<String>()
+    db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%' AND name NOT LIKE 'room_%'",
+        null
+    ).use { c ->
+        while (c.moveToNext()) out.add(c.getString(0))
+    }
+    return out
+}
+
+private fun tableSql(db: SQLiteDatabase, table: String): String? =
+    db.rawQuery("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)).use { c ->
+        if (c.moveToFirst()) c.getString(0) else null
+    }
+
+private fun imageFileOf(ctx: Context, path: String): File {
+    val f = File(path)
+    return if (f.isAbsolute) f else File(ctx.filesDir, path)
+}
+
+private fun dumpTable(
+    ctx: Context,
+    db: SQLiteDatabase,
+    table: String,
+    range: BackupRange?,
+    images: MutableMap<String, File>
+): JSONObject {
+    val dateColumn = DATE_COLUMNS[table]
+    val args: Array<String>? = if (range != null && dateColumn != null) {
+        arrayOf(range.from.toString(), range.to.toString())
+    } else {
+        null
+    }
+    val sql = if (args != null) {
+        "SELECT * FROM \"$table\" WHERE \"$dateColumn\" BETWEEN ? AND ?"
+    } else {
+        "SELECT * FROM \"$table\""
+    }
+
+    val columns = JSONArray()
+    val rows = JSONArray()
+    db.rawQuery(sql, args).use { c ->
+        val names = c.columnNames
+        names.forEach { columns.put(it) }
+        val imageIndex = names.indexOf("image_path")
+        while (c.moveToNext()) {
+            val row = JSONObject()
+            for (i in names.indices) {
+                var value: Any = when (c.getType(i)) {
+                    Cursor.FIELD_TYPE_INTEGER -> c.getLong(i)
+                    Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i)
+                    Cursor.FIELD_TYPE_STRING -> c.getString(i)
+                    else -> JSONObject.NULL
+                }
+                // عکس کالا: فایل را همراه بکاپ می‌بریم و مسیر را به نام داخل فایل تبدیل می‌کنیم
+                if (i == imageIndex && value is String && value.isNotBlank()) {
+                    val file = imageFileOf(ctx, value)
+                    value = if (file.exists()) {
+                        val entry = IMAGE_ENTRY_PREFIX + file.name
+                        images[entry] = file
+                        entry
+                    } else {
+                        JSONObject.NULL
+                    }
+                }
+                row.put(names[i], value)
             }
-            return out
+            rows.put(row)
         }
-    } finally {
-        db.close()
     }
+
+    return JSONObject()
+        .put("name", table)
+        .put("sql", tableSql(db, table) ?: JSONObject.NULL)
+        .put("columns", columns)
+        .put("rows", rows)
 }
 
-fun readProductsForBackup(ctx: Context): List<BackupProduct> {
-    val db = openDb(ctx, false)
-    try {
-        db.rawQuery("SELECT id, name, code, price, stock FROM products", null).use { c ->
-            val out = ArrayList<BackupProduct>()
-            while (c.moveToNext()) {
-                out.add(
-                    BackupProduct(
-                        id = c.getLong(0),
-                        name = c.getString(1) ?: "",
-                        code = if (c.isNull(2)) null else c.getString(2),
-                        price = c.getLong(3),
-                        stock = c.getInt(4)
-                    )
-                )
-            }
-            return out
+private fun encodePref(value: Any?): JSONObject? {
+    val o = JSONObject()
+    when (value) {
+        is String -> o.put("t", "s").put("v", value)
+        is Boolean -> o.put("t", "b").put("v", value)
+        is Int -> o.put("t", "i").put("v", value)
+        is Long -> o.put("t", "l").put("v", value)
+        is Float -> o.put("t", "f").put("v", value.toDouble())
+        is Set<*> -> {
+            val arr = JSONArray()
+            value.filterIsInstance<String>().forEach { arr.put(it) }
+            o.put("t", "set").put("v", arr)
         }
-    } finally {
-        db.close()
+        else -> return null
     }
+    return o
 }
 
-// ================= JSON =================
+private fun buildBundle(ctx: Context, range: BackupRange?, periodName: String): BackupBundle {
+    val images = LinkedHashMap<String, File>()
+    val databases = JSONObject()
+    val counts = JSONObject()
 
-fun exportBackupJson(out: OutputStream, txs: List<BackupTx>, products: List<BackupProduct>, periodName: String) {
-    val tArr = JSONArray()
-    for (t in txs) {
-        tArr.put(
-            JSONObject()
-                .put("id", t.id)
-                .put("title", t.title)
-                .put("amount", t.amount)
-                .put("isIncome", t.isIncome)
-                .put("category", t.category)
-                .put("dateMillis", t.dateMillis)
-        )
-    }
-    val pArr = JSONArray()
-    for (p in products) {
-        pArr.put(
-            JSONObject()
-                .put("id", p.id)
-                .put("name", p.name)
-                .put("code", p.code ?: JSONObject.NULL)
-                .put("price", p.price)
-                .put("stock", p.stock)
-        )
-    }
-    val root = JSONObject()
-        .put("app", "hesabyar")
-        .put("format", 1)
-        .put("period", periodName)
-        .put("exportedAt", System.currentTimeMillis())
-        .put("transactions", tArr)
-        .put("products", pArr)
-    out.bufferedWriter(Charsets.UTF_8).use { it.write(root.toString(2)) }
-}
-
-// بازیابی: رکوردها بر اساس شناسه اضافه یا جایگزین می‌شوند. اطلاعات دیگر پاک نمی‌شود.
-fun importBackupJson(ctx: Context, input: InputStream): Int {
-    val text = input.bufferedReader(Charsets.UTF_8).use { it.readText() }
-    val root = JSONObject(text)
-    val tArr = root.optJSONArray("transactions") ?: JSONArray()
-    val pArr = root.optJSONArray("products") ?: JSONArray()
-    var count = 0
-    val db = openDb(ctx, true)
-    try {
-        db.beginTransaction()
+    for (dbName in BACKUP_DBS) {
+        if (!dbFile(ctx, dbName).exists()) continue
+        val db = openDbFile(ctx, dbName, false)
+        val tables = JSONArray()
+        var version = 0
         try {
-            for (i in 0 until tArr.length()) {
-                val o = tArr.getJSONObject(i)
-                val cv = ContentValues()
-                cv.put("id", o.getLong("id"))
-                cv.put("title", o.getString("title"))
-                cv.put("amount", o.getLong("amount"))
-                cv.put("isIncome", if (o.getBoolean("isIncome")) 1 else 0)
-                cv.put("category", o.getString("category"))
-                cv.put("dateMillis", o.getLong("dateMillis"))
-                db.insertWithOnConflict("transactions", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
-                count++
+            version = db.version
+            for (table in tableNames(db)) {
+                val dump = dumpTable(ctx, db, table, range, images)
+                tables.put(dump)
+                counts.put(table, dump.getJSONArray("rows").length())
             }
-            for (i in 0 until pArr.length()) {
-                val o = pArr.getJSONObject(i)
-                val cv = ContentValues()
-                cv.put("id", o.getLong("id"))
-                cv.put("name", o.getString("name"))
-                cv.put("code", if (o.isNull("code")) null else o.getString("code"))
-                cv.put("price", o.getLong("price"))
-                cv.put("stock", o.getInt("stock"))
-                db.insertWithOnConflict("products", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
-                count++
-            }
-            db.setTransactionSuccessful()
         } finally {
-            db.endTransaction()
+            db.close()
         }
-    } finally {
-        db.close()
+        databases.put(dbName, JSONObject().put("version", version).put("tables", tables))
     }
-    return count
+
+    val prefs = JSONObject()
+    for (name in BACKUP_PREFS) {
+        val sp = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val obj = JSONObject()
+        for ((key, value) in sp.all) {
+            if (key in SKIP_PREF_KEYS) continue
+            val enc = encodePref(value) ?: continue
+            obj.put(key, enc)
+        }
+        prefs.put(name, obj)
+    }
+
+    val header = JSONObject()
+        .put("app", BACKUP_APP)
+        .put("format", BACKUP_FORMAT)
+        .put("period", periodName)
+        .put("createdAt", System.currentTimeMillis())
+        .put("counts", counts)
+        .put("images", images.size)
+
+    val full = JSONObject(header.toString())
+        .put("databases", databases)
+        .put("prefs", prefs)
+
+    return BackupBundle(header, full, images)
 }
 
-// ================= Excel (xlsx) بدون کتابخانه اضافی =================
+private fun countRecords(counts: JSONObject): Int {
+    var sum = 0
+    val keys = counts.keys()
+    while (keys.hasNext()) sum += counts.optInt(keys.next())
+    return sum
+}
 
-fun exportBackupXlsx(out: OutputStream, txs: List<BackupTx>, products: List<BackupProduct>) {
-    val fmt = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US)
-    val tRows = ArrayList<List<Any?>>()
-    tRows.add(listOf("تاریخ", "نوع", "عنوان", "دسته‌بندی", "مبلغ"))
-    for (t in txs) {
-        tRows.add(
-            listOf(
-                fmt.format(Date(t.dateMillis)),
-                if (t.isIncome) "درآمد" else "هزینه",
-                t.title,
-                t.category.removePrefix("custom:"),
-                t.amount
-            )
-        )
+// ================= نوشتن فایل‌ها =================
+
+private fun putText(zip: ZipOutputStream, name: String, text: String) {
+    zip.putNextEntry(ZipEntry(name))
+    zip.write(text.toByteArray(Charsets.UTF_8))
+    zip.closeEntry()
+}
+
+private fun writeZipBackup(out: OutputStream, b: BackupBundle) {
+    ZipOutputStream(out).use { zip ->
+        putText(zip, "manifest.json", b.header.toString(2))
+        putText(zip, "data.json", b.full.toString())
+        for ((name, file) in b.images) {
+            zip.putNextEntry(ZipEntry(name))
+            file.inputStream().use { input -> input.copyTo(zip) }
+            zip.closeEntry()
+        }
     }
-    val pRows = ArrayList<List<Any?>>()
-    pRows.add(listOf("نام کالا", "کد", "قیمت", "موجودی"))
-    for (p in products) {
-        pRows.add(listOf(p.name, p.code ?: "", p.price, p.stock))
+}
+
+private fun writeJsonBackup(out: OutputStream, b: BackupBundle) {
+    out.bufferedWriter(Charsets.UTF_8).use { it.write(b.full.toString(2)) }
+}
+
+private fun runExport(ctx: Context, uri: Uri, kind: ExportKind, period: BackupPeriod, from: Long?, to: Long?): Int {
+    val range = backupRangeFor(period, from, to)
+    val bundle = buildBundle(ctx, range, period.name)
+    val os = ctx.contentResolver.openOutputStream(uri) ?: error("file")
+    os.use {
+        when (kind) {
+            ExportKind.FULL -> writeZipBackup(it, bundle)
+            ExportKind.JSON -> writeJsonBackup(it, bundle)
+            ExportKind.EXCEL -> writeExcelBackup(it, bundle)
+        }
     }
-    writeXlsx(out, listOf("تراکنش‌ها" to tRows, "محصولات" to pRows))
+    return countRecords(bundle.header.getJSONObject("counts"))
+}
+
+// ================= خروجی اکسل =================
+
+private fun isDateColumn(c: String) = c == "dateMillis" || c == "dueMillis" || c == "date_millis"
+
+private fun xlsxCell(column: String, value: Any?): Any {
+    if (value == null || value === JSONObject.NULL) return ""
+    return when {
+        column == "isIncome" -> if (value.toString() == "1") "درآمد" else "هزینه"
+        column == "category" -> value.toString().removePrefix("custom:")
+        isDateColumn(column) && value is Number ->
+            SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US).format(Date(value.toLong()))
+        else -> value
+    }
+}
+
+private fun writeExcelBackup(out: OutputStream, b: BackupBundle) {
+    val dbs = b.full.getJSONObject("databases")
+    val sheets = ArrayList<Pair<String, List<List<Any?>>>>()
+    for (dbName in BACKUP_DBS) {
+        val tables = dbs.optJSONObject(dbName)?.optJSONArray("tables") ?: continue
+        for (i in 0 until tables.length()) {
+            val t = tables.getJSONObject(i)
+            val sheetName = EXCEL_SHEETS[t.getString("name")] ?: continue
+            val cols = t.getJSONArray("columns")
+            val names = ArrayList<String>()
+            for (c in 0 until cols.length()) {
+                val col = cols.getString(c)
+                if (col != "image_path") names.add(col)
+            }
+            val rows = ArrayList<List<Any?>>()
+            rows.add(names.map { COLUMN_LABELS[it] ?: it })
+            val data = t.getJSONArray("rows")
+            for (r in 0 until data.length()) {
+                val row = data.getJSONObject(r)
+                rows.add(names.map { col -> xlsxCell(col, row.opt(col)) })
+            }
+            sheets.add(sheetName to rows)
+        }
+    }
+    writeXlsx(out, sheets)
 }
 
 private fun writeXlsx(out: OutputStream, sheets: List<Pair<String, List<List<Any?>>>>) {
@@ -360,6 +490,216 @@ private fun xmlEscape(s: String): String =
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
 
+// ================= بازیابی =================
+
+// فایل را از روی محتوایش تشخیص می‌دهد: ZIP (حسابیار کامل) یا JSON (قدیمی یا JSON جدید)
+fun restoreBackup(ctx: Context, input: InputStream): Int {
+    val bis = BufferedInputStream(input)
+    bis.mark(4)
+    val first = bis.read()
+    val second = bis.read()
+    bis.reset()
+    return if (first == 0x50 && second == 0x4B) restoreZip(ctx, bis) else restoreJson(ctx, bis)
+}
+
+private fun restoreZip(ctx: Context, input: InputStream): Int {
+    var manifestText: String? = null
+    var dataText: String? = null
+    ZipInputStream(input).use { zip ->
+        while (true) {
+            val entry = zip.nextEntry ?: break
+            when {
+                entry.name == "manifest.json" -> manifestText = zip.readBytes().toString(Charsets.UTF_8)
+                entry.name == "data.json" -> dataText = zip.readBytes().toString(Charsets.UTF_8)
+                entry.name.startsWith(IMAGE_ENTRY_PREFIX) -> saveImage(ctx, entry.name, zip)
+            }
+            zip.closeEntry()
+        }
+    }
+    val header = JSONObject(manifestText ?: throw BackupFileException(REASON_NOT_BACKUP))
+    if (header.optString("app") != BACKUP_APP) throw BackupFileException(REASON_NOT_BACKUP)
+    if (header.optInt("format", 0) > BACKUP_FORMAT) throw BackupFileException(REASON_NEWER)
+    val data = JSONObject(dataText ?: throw BackupFileException(REASON_NOT_BACKUP))
+    return applyData(ctx, data)
+}
+
+private fun restoreJson(ctx: Context, input: InputStream): Int {
+    val text = input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    val root = try {
+        JSONObject(text)
+    } catch (e: Exception) {
+        throw BackupFileException(REASON_NOT_BACKUP)
+    }
+    if (root.has("app") && root.optString("app") != BACKUP_APP) throw BackupFileException(REASON_NOT_BACKUP)
+    if (root.optInt("format", 0) > BACKUP_FORMAT) throw BackupFileException(REASON_NEWER)
+    return when {
+        root.has("databases") -> applyData(ctx, root)
+        root.has("transactions") -> importLegacy(ctx, root)
+        else -> throw BackupFileException(REASON_NOT_BACKUP)
+    }
+}
+
+private fun saveImage(ctx: Context, entryName: String, zip: ZipInputStream) {
+    val name = entryName.substringAfterLast('/')
+    if (name.isBlank() || name == "." || name == "..") return
+    val dir = File(ctx.filesDir, IMAGE_DIR)
+    dir.mkdirs()
+    File(dir, name).outputStream().use { zip.copyTo(it) }
+}
+
+// مسیر عکس را برای این گوشی درست می‌کند؛ اگر عکسی نباشد، خالی می‌گذارد
+private fun imagePathFor(ctx: Context, value: String): String? {
+    if (value.startsWith(IMAGE_ENTRY_PREFIX)) {
+        val f = File(File(ctx.filesDir, IMAGE_DIR), value.substringAfterLast('/'))
+        return if (f.exists()) f.absolutePath else null
+    }
+    return if (File(value).exists()) value else null
+}
+
+private fun putValue(ctx: Context, cv: ContentValues, key: String, value: Any?) {
+    when (value) {
+        null -> cv.putNull(key)
+        JSONObject.NULL -> cv.putNull(key)
+        is Int -> cv.put(key, value.toLong())
+        is Long -> cv.put(key, value)
+        is Double -> cv.put(key, value)
+        is String -> {
+            if (key == "image_path") cv.put(key, imagePathFor(ctx, value)) else cv.put(key, value)
+        }
+        else -> cv.putNull(key)
+    }
+}
+
+private fun tableExists(db: SQLiteDatabase, table: String): Boolean =
+    db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table))
+        .use { it.moveToFirst() }
+
+private fun restoreTable(ctx: Context, db: SQLiteDatabase, t: JSONObject): Int {
+    val table = t.getString("name")
+    if (!tableExists(db, table)) {
+        // اگر جدول در گوشی جدید وجود ندارد، از همان تعریف ذخیره‌شده در بکاپ ساخته می‌شود
+        val sql = t.optString("sql", "")
+        if (sql.isBlank()) return 0
+        db.execSQL(sql.replaceFirst("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", ignoreCase = true))
+    }
+    val rows = t.optJSONArray("rows") ?: return 0
+    var count = 0
+    for (i in 0 until rows.length()) {
+        val row = rows.getJSONObject(i)
+        val cv = ContentValues()
+        val keys = row.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            putValue(ctx, cv, key, row.opt(key))
+        }
+        val id = db.insertWithOnConflict(table, null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        if (id == -1L) throw IllegalStateException("insert failed: $table")
+        count++
+    }
+    return count
+}
+
+private fun applyData(ctx: Context, data: JSONObject): Int {
+    var total = 0
+    val dbs = data.optJSONObject("databases") ?: JSONObject()
+    for (dbName in BACKUP_DBS) {
+        val obj = dbs.optJSONObject(dbName) ?: continue
+        val tables = obj.optJSONArray("tables") ?: continue
+        val version = obj.optInt("version", 0)
+        val db = openDbFile(ctx, dbName, true)
+        try {
+            // دیتابیس تازه نسخه‌اش صفر است؛ نسخه بکاپ را می‌گذاریم تا برنامه دوباره جدول‌ها را نسازد
+            if (db.version == 0 && version > 0) db.version = version
+            db.beginTransaction()
+            try {
+                for (i in 0 until tables.length()) {
+                    total += restoreTable(ctx, db, tables.getJSONObject(i))
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        } finally {
+            db.close()
+        }
+    }
+    restorePrefs(ctx, data.optJSONObject("prefs"))
+    return total
+}
+
+private fun restorePrefs(ctx: Context, prefs: JSONObject?) {
+    if (prefs == null) return
+    val fileNames = prefs.keys()
+    while (fileNames.hasNext()) {
+        val fileName = fileNames.next()
+        if (fileName !in BACKUP_PREFS) continue
+        val obj = prefs.optJSONObject(fileName) ?: continue
+        val editor = ctx.getSharedPreferences(fileName, Context.MODE_PRIVATE).edit()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (key in SKIP_PREF_KEYS) continue
+            val item = obj.optJSONObject(key) ?: continue
+            when (item.optString("t")) {
+                "s" -> editor.putString(key, item.optString("v"))
+                "b" -> editor.putBoolean(key, item.optBoolean("v"))
+                "i" -> editor.putInt(key, item.optInt("v"))
+                "l" -> editor.putLong(key, item.optLong("v"))
+                "f" -> editor.putFloat(key, item.optDouble("v").toFloat())
+                "set" -> {
+                    val arr = item.optJSONArray("v") ?: JSONArray()
+                    val set = HashSet<String>()
+                    for (i in 0 until arr.length()) set.add(arr.getString(i))
+                    editor.putStringSet(key, set)
+                }
+            }
+        }
+        editor.apply()
+    }
+}
+
+// فرمت قدیمی (نسخه قبلی برنامه): فقط تراکنش‌ها و محصولات
+private fun importLegacy(ctx: Context, root: JSONObject): Int {
+    val tArr = root.optJSONArray("transactions") ?: JSONArray()
+    val pArr = root.optJSONArray("products") ?: JSONArray()
+    var count = 0
+    val db = openDbFile(ctx, DB_MAIN, true)
+    try {
+        db.beginTransaction()
+        try {
+            for (i in 0 until tArr.length()) {
+                val o = tArr.getJSONObject(i)
+                val cv = ContentValues()
+                cv.put("id", o.getLong("id"))
+                cv.put("title", o.getString("title"))
+                cv.put("amount", o.getLong("amount"))
+                cv.put("isIncome", if (o.getBoolean("isIncome")) 1 else 0)
+                cv.put("category", o.getString("category"))
+                cv.put("dateMillis", o.getLong("dateMillis"))
+                db.insertWithOnConflict("transactions", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+                count++
+            }
+            for (i in 0 until pArr.length()) {
+                val o = pArr.getJSONObject(i)
+                val cv = ContentValues()
+                cv.put("id", o.getLong("id"))
+                cv.put("name", o.getString("name"))
+                cv.put("code", if (o.isNull("code")) null else o.getString("code"))
+                cv.put("price", o.getLong("price"))
+                cv.put("stock", o.getInt("stock"))
+                db.insertWithOnConflict("products", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+                count++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    } finally {
+        db.close()
+    }
+    return count
+}
+
 // ================= رابط کاربری بکاپ =================
 
 @Composable
@@ -384,64 +724,95 @@ fun BackupSection(modifier: Modifier = Modifier) {
 
     val msgOk = tr("انجام شد ✓", "Done ✓", "تم ✓")
     val msgErr = tr("خطا: ", "Error: ", "خطأ: ")
+    val msgBadDates = tr(
+        "تاریخ‌ها را مثل 2025/01/31 وارد کنید.",
+        "Enter dates like 2025/01/31.",
+        "أدخل التواريخ بالشكل 2025/01/31."
+    )
+    val msgNotBackup = tr(
+        "این فایل، پشتیبان حسابیار نیست.",
+        "This file is not a Hesabyar backup.",
+        "هذا الملف ليس نسخة احتياطية من حسابيار."
+    )
+    val msgNewer = tr(
+        "این پشتیبان با نسخه جدیدتر برنامه ساخته شده. برنامه را به‌روز کنید.",
+        "This backup was made by a newer version. Please update the app.",
+        "أُنشئت هذه النسخة بإصدار أحدث من التطبيق. يُرجى تحديثه."
+    )
     val msgRestored = tr(
-        "بازیابی انجام شد. برای دیدن تغییرات، برنامه را ببندید و دوباره باز کنید.",
-        "Restored. Close and reopen the app to see the changes.",
-        "تمت الاستعادة. أغلق التطبيق وأعد فتحه لرؤية التغييرات."
+        "بازیابی انجام شد. برای دیدن همه تغییرات، برنامه را ببندید و دوباره باز کنید.",
+        "Restored. Close and reopen the app to see all changes.",
+        "تمت الاستعادة. أغلق التطبيق وأعد فتحه لرؤية كل التغييرات."
+    )
+    val msgPeriodNote = tr(
+        "بازه زمانی فقط روی تراکنش‌ها و فروش‌ها اعمال می‌شود. چک‌ها، کالاها، عکس‌ها و تنظیمات همیشه کامل ذخیره می‌شوند.",
+        "The period applies only to transactions and sales. Cheques, items, photos and settings are always saved in full.",
+        "تنطبق الفترة على المعاملات والمبيعات فقط. تُحفظ الشيكات والمنتجات والصور والإعدادات دائماً بالكامل."
     )
 
-    var period by remember { mutableStateOf(BackupPeriod.MONTHLY) }
+    var period by remember { mutableStateOf(BackupPeriod.ALL) }
     var fromText by remember { mutableStateOf("") }
     var toText by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+
+    fun customRangeOk(): Boolean =
+        period != BackupPeriod.CUSTOM ||
+            (parseBackupDay(fromText) != null && parseBackupDay(toText) != null)
+
+    fun doExport(uri: Uri, kind: ExportKind) {
+        val p = period
+        val from = parseBackupDay(fromText)
+        val to = parseBackupDay(toText)
+        scope.launch {
+            busy = true
+            status = withContext(Dispatchers.IO) {
+                try {
+                    val n = runExport(ctx, uri, kind, p, from, to)
+                    "$msgOk ($n)"
+                } catch (e: Exception) {
+                    msgErr + (e.message ?: "")
+                }
+            }
+            busy = false
+        }
+    }
+
+    fun doRestore(uri: Uri) {
+        scope.launch {
+            busy = true
+            status = withContext(Dispatchers.IO) {
+                try {
+                    val stream = ctx.contentResolver.openInputStream(uri) ?: error("file")
+                    val n = stream.use { restoreBackup(ctx, it) }
+                    "$msgRestored ($n)"
+                } catch (e: BackupFileException) {
+                    if (e.reason == REASON_NEWER) msgNewer else msgNotBackup
+                } catch (e: Exception) {
+                    msgErr + (e.message ?: "")
+                }
+            }
+            busy = false
+        }
+    }
+
+    val fullSaver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) doExport(uri, ExportKind.FULL)
+    }
 
     val jsonSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri != null) {
-            val p = period
-            val from = parseBackupDay(fromText)
-            val to = parseBackupDay(toText)
-            scope.launch {
-                status = withContext(Dispatchers.IO) {
-                    try {
-                        val range = backupRangeFor(p, from, to)
-                        val txs = readTxForBackup(ctx, range)
-                        val products = readProductsForBackup(ctx)
-                        val os = ctx.contentResolver.openOutputStream(uri) ?: error("file")
-                        os.use { exportBackupJson(it, txs, products, p.name) }
-                        msgOk
-                    } catch (e: Exception) {
-                        msgErr + (e.message ?: "")
-                    }
-                }
-            }
-        }
+        if (uri != null) doExport(uri, ExportKind.JSON)
     }
 
     val xlsxSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) { uri ->
-        if (uri != null) {
-            val p = period
-            val from = parseBackupDay(fromText)
-            val to = parseBackupDay(toText)
-            scope.launch {
-                status = withContext(Dispatchers.IO) {
-                    try {
-                        val range = backupRangeFor(p, from, to)
-                        val txs = readTxForBackup(ctx, range)
-                        val products = readProductsForBackup(ctx)
-                        val os = ctx.contentResolver.openOutputStream(uri) ?: error("file")
-                        os.use { exportBackupXlsx(it, txs, products) }
-                        msgOk
-                    } catch (e: Exception) {
-                        msgErr + (e.message ?: "")
-                    }
-                }
-            }
-        }
+        if (uri != null) doExport(uri, ExportKind.EXCEL)
     }
 
     val restorePicker = rememberLauncherForActivityResult(
@@ -450,36 +821,73 @@ fun BackupSection(modifier: Modifier = Modifier) {
         if (uri != null) pendingRestore = uri
     }
 
+    val titleText = tr("پشتیبان‌گیری و بازیابی", "Backup & restore", "النسخ الاحتياطي والاستعادة")
+    val introText = tr(
+        "اطلاعات شما فقط روی همین گوشی ذخیره می‌شود. برای انتقال به گوشی جدید یا بازیابی بعد از حذف برنامه، «پشتیبان کامل» را بگیرید.",
+        "Your data is stored only on this phone. To move to a new phone or recover after reinstalling, create a Full backup.",
+        "تُحفظ بياناتك على هذا الهاتف فقط. لنقلها إلى هاتف جديد أو استعادتها بعد إعادة تثبيت التطبيق، أنشئ نسخة كاملة."
+    )
+    val periodTitle = tr("بازه زمانی", "Period", "الفترة")
+    val createTitle = tr("ساخت پشتیبان", "Create backup", "إنشاء نسخة احتياطية")
+    val btnFull = tr("پشتیبان کامل", "Full backup", "نسخة كاملة")
+    val btnJson = tr("خروجی JSON", "JSON export", "تصدير JSON")
+    val btnExcel = tr("خروجی اکسل", "Excel export", "تصدير Excel")
+    val hintFull = tr(
+        "کامل: همه اطلاعات، عکس کالاها و تنظیمات. برای بازیابی در گوشی جدید.",
+        "Full: all data, item photos and settings. Use it to restore on a new phone.",
+        "كاملة: كل البيانات وصور المنتجات والإعدادات. للاستعادة على هاتف جديد."
+    )
+    val hintJson = tr(
+        "فقط اطلاعات، بدون عکس. قابل بازیابی در همین برنامه.",
+        "Data only, no photos. Can be restored in this app.",
+        "البيانات فقط بدون صور. يمكن استعادتها في هذا التطبيق."
+    )
+    val hintExcel = tr(
+        "برای باز کردن در اکسل. بازیابی از این فایل ممکن نیست.",
+        "To open in Excel. Cannot be restored from this file.",
+        "لفتحها في Excel. لا يمكن الاستعادة من هذا الملف."
+    )
+    val restoreTitle = tr("بازیابی", "Restore", "الاستعادة")
+    val restoreHint = tr(
+        "فایل پشتیبان (.hesabyar یا .json) را انتخاب کنید. اطلاعات فایل به اطلاعات فعلی اضافه می‌شود و رکوردهای با شناسه یکسان به‌روز می‌شوند.",
+        "Choose a backup file (.hesabyar or .json). Its data is added to current data; records with the same ID are updated.",
+        "اختر ملف النسخة (.hesabyar أو .json). تُضاف بياناته إلى البيانات الحالية، وتُحدَّث السجلات ذات المعرف نفسه."
+    )
+    val btnRestore = tr("بازیابی از فایل", "Restore from file", "استعادة من ملف")
+    val dialogTitle = tr("بازیابی بکاپ", "Restore backup", "استعادة النسخة")
+    val dialogText = tr(
+        "اطلاعات این فایل به اطلاعات فعلی اضافه می‌شود. رکوردهای با شناسه یکسان جایگزین می‌شوند.",
+        "Data from this file will be added. Records with the same ID will be replaced.",
+        "ستُضاف بيانات هذا الملف. ستُستبدل السجلات ذات المعرف نفسه."
+    )
+    val btnConfirm = tr("بازیابی", "Restore", "استعادة")
+    val btnCancel = tr("انصراف", "Cancel", "إلغاء")
+
     Card(modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                tr("پشتیبان‌گیری و بازیابی", "Backup & restore", "النسخ الاحتياطي والاستعادة"),
-                style = MaterialTheme.typography.titleMedium
-            )
-            Text(
-                tr(
-                    "اطلاعات شما فقط روی همین گوشی ذخیره می‌شود. بازه‌ها بر اساس تاریخ میلادی حساب می‌شوند.",
-                    "Your data is stored only on this phone. Periods use Gregorian dates.",
-                    "تُحفظ بياناتك على هذا الهاتف فقط. الفترات تعتمد على التاريخ الميلادي."
-                ),
-                style = MaterialTheme.typography.bodySmall
-            )
+            Text(titleText, style = MaterialTheme.typography.titleMedium)
+            Text(introText, style = MaterialTheme.typography.bodySmall)
 
-            Text(tr("بازه زمانی", "Period", "الفترة"), style = MaterialTheme.typography.labelLarge)
+            Text(periodTitle, style = MaterialTheme.typography.labelLarge)
             BackupPeriod.entries.chunked(3).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     row.forEach { p ->
                         FilterChip(
                             selected = period == p,
                             onClick = { period = p },
-                            label = { Text(periodLabel(p)) }
+                            label = { Text(periodLabel(p)) },
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
             }
+            Text(msgPeriodNote, style = MaterialTheme.typography.bodySmall)
 
             if (period == BackupPeriod.CUSTOM) {
                 OutlinedTextField(
@@ -498,18 +906,64 @@ fun BackupSection(modifier: Modifier = Modifier) {
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { jsonSaver.launch(backupFileName(period, "json")) }) {
-                    Text(tr("ذخیره فایل JSON", "Save JSON", "حفظ JSON"))
-                }
-                Button(onClick = { xlsxSaver.launch(backupFileName(period, "xlsx")) }) {
-                    Text(tr("ذخیره اکسل", "Save Excel", "حفظ Excel"))
-                }
+            Text(createTitle, style = MaterialTheme.typography.labelLarge)
+
+            Button(
+                onClick = {
+                    if (!customRangeOk()) {
+                        status = msgBadDates
+                    } else {
+                        fullSaver.launch(backupFileName(period, "hesabyar"))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(btnFull)
             }
-            Button(onClick = { restorePicker.launch(arrayOf("*/*")) }) {
-                Text(tr("بازیابی از فایل JSON", "Restore from JSON", "استعادة من JSON"))
+            Text(hintFull, style = MaterialTheme.typography.bodySmall)
+
+            OutlinedButton(
+                onClick = {
+                    if (!customRangeOk()) {
+                        status = msgBadDates
+                    } else {
+                        jsonSaver.launch(backupFileName(period, "json"))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(btnJson)
+            }
+            Text(hintJson, style = MaterialTheme.typography.bodySmall)
+
+            OutlinedButton(
+                onClick = {
+                    if (!customRangeOk()) {
+                        status = msgBadDates
+                    } else {
+                        xlsxSaver.launch(backupFileName(period, "xlsx"))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(btnExcel)
+            }
+            Text(hintExcel, style = MaterialTheme.typography.bodySmall)
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(restoreTitle, style = MaterialTheme.typography.labelLarge)
+            Text(restoreHint, style = MaterialTheme.typography.bodySmall)
+            Button(
+                onClick = { restorePicker.launch(arrayOf("*/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(btnRestore)
             }
 
+            if (busy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
             status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         }
     }
@@ -517,38 +971,20 @@ fun BackupSection(modifier: Modifier = Modifier) {
     pendingRestore?.let { uri ->
         AlertDialog(
             onDismissRequest = { pendingRestore = null },
-            title = { Text(tr("بازیابی بکاپ", "Restore backup", "استعادة النسخة")) },
-            text = {
-                Text(
-                    tr(
-                        "اطلاعات این فایل به اطلاعات فعلی اضافه یا جایگزین می‌شود.",
-                        "Data from this file will be added to or replace current data.",
-                        "ستُضاف بيانات هذا الملف إلى البيانات الحالية أو تستبدلها."
-                    )
-                )
-            },
+            title = { Text(dialogTitle) },
+            text = { Text(dialogText) },
             confirmButton = {
                 TextButton(onClick = {
                     val u = uri
                     pendingRestore = null
-                    scope.launch {
-                        status = withContext(Dispatchers.IO) {
-                            try {
-                                val stream = ctx.contentResolver.openInputStream(u) ?: error("file")
-                                val n = stream.use { importBackupJson(ctx, it) }
-                                "$msgRestored ($n)"
-                            } catch (e: Exception) {
-                                msgErr + (e.message ?: "")
-                            }
-                        }
-                    }
+                    doRestore(u)
                 }) {
-                    Text(tr("بازیابی", "Restore", "استعادة"))
+                    Text(btnConfirm)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingRestore = null }) {
-                    Text(tr("انصراف", "Cancel", "إلغاء"))
+                    Text(btnCancel)
                 }
             }
         )
@@ -570,9 +1006,9 @@ fun FirstRunNotice() {
             text = {
                 Text(
                     tr(
-                        "اطلاعات مالی شما فقط روی همین گوشی ذخیره می‌شوند و به هیچ سرور یا ابری فرستاده نمی‌شوند.\n\nاگر برنامه حذف شود، گوشی عوض شود یا گوشی خراب شود، این اطلاعات از بین می‌رود. پیشنهاد می‌کنیم از بخش تنظیمات، بکاپ JSON یا اکسل بگیرید و فایل را در جای امنی نگه دارید.",
-                        "Your financial data is stored only on this phone and is never sent to a server or cloud.\n\nIf the app is uninstalled, the phone is changed or damaged, this data will be lost. Please make a backup (JSON or Excel) from Settings and keep the file somewhere safe.",
-                        "بياناتك المالية محفوظة على هذا الهاتف فقط ولا تُرسل إلى أي خادم أو سحابة.\n\nإذا حُذف التطبيق أو تغيّر الهاتف أو تعطّل، ستُفقد هذه البيانات. يُنصح بأخذ نسخة احتياطية (JSON أو Excel) من الإعدادات وحفظ الملف في مكان آمن."
+                        "اطلاعات مالی شما فقط روی همین گوشی ذخیره می‌شوند و به هیچ سرور یا ابری فرستاده نمی‌شوند.\n\nاگر برنامه حذف شود، گوشی عوض شود یا گوشی خراب شود، این اطلاعات از بین می‌رود. پیشنهاد می‌کنیم از بخش تنظیمات، «پشتیبان کامل» بگیرید و فایل را در جای امنی نگه دارید.",
+                        "Your financial data is stored only on this phone and is never sent to a server or cloud.\n\nIf the app is uninstalled, the phone is changed or damaged, this data will be lost. Please create a Full backup from Settings and keep the file somewhere safe.",
+                        "بياناتك المالية محفوظة على هذا الهاتف فقط ولا تُرسل إلى أي خادم أو سحابة.\n\nإذا حُذف التطبيق أو تغيّر الهاتف أو تعطّل، ستُفقد هذه البيانات. يُنصح بأخذ «نسخة كاملة» من الإعدادات وحفظ الملف في مكان آمن."
                     )
                 )
             },
