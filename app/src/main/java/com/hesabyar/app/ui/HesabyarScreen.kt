@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
@@ -14,10 +16,11 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -28,6 +31,7 @@ import com.hesabyar.app.data.Category
 import com.hesabyar.app.data.TransactionEntity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val CUSTOM_PREFIX = "custom:"
 private const val OTHER_EXPENSE = "other_expense"
@@ -36,16 +40,24 @@ private const val OTHER_INCOME = "other_income"
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HesabyarScreen(vm: MainViewModel = viewModel()) {
-    val regionType = CalendarType.forLanguage(LocalConfiguration.current.locales[0].language)
+    val context = LocalContext.current
+    val lang = currentLang()
+    val regionType = CalendarType.forLanguage(lang)
     val deviceClock by vm.deviceClock.collectAsState()
     val pagerState = rememberPagerState(pageCount = { 4 })
     val scope = rememberCoroutineScope()
+    var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
+
+    LaunchedEffect(Unit) {
+        if (WeatherStore.hasLocation(context)) WeatherStore.refresh(context)
+    }
 
     fun goTo(page: Int) {
         scope.launch { pagerState.animateScrollToPage(page) }
     }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
             ClockHeader(regionType = regionType, deviceClock = deviceClock)
         },
@@ -92,12 +104,19 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
             }
         }
     }
+
+    if (showLocationSetup) {
+        LocationSetupDialog(onDone = { showLocationSetup = false })
+    }
 }
 
-// ---------- هدر ثابت: دو خط (تاریخ و ساعت) ----------
+// ---------- هدر: تاریخ و ساعت (دو خط) + آب‌وهوا + دکمه تم ----------
 
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
+    val context = LocalContext.current
+    val lang = currentLang()
+
     val now by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
@@ -111,25 +130,72 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
     val timeText = formatWith(now, "HH:mm:ss", locale, zone)
 
+    val dark = isDarkNow()
+    val weather = WeatherStore.state
+
+    val tempText = when (weather) {
+        is WeatherState.Ok -> "${weather.info.current.roundToInt()}°"
+        WeatherState.Loading -> "…"
+        WeatherState.Error -> "--°"
+        WeatherState.None -> "--°"
+    }
+    val condText = when (weather) {
+        is WeatherState.Ok -> conditionText(weather.info.code, lang)
+        WeatherState.Loading -> tr("در حال دریافت", "Loading", "جارٍ التحميل")
+        WeatherState.Error -> tr("خطا در دریافت", "Fetch error", "خطأ في الجلب")
+        WeatherState.None -> tr("موقعیت تنظیم نشده", "Location not set", "الموقع غير محدد")
+    }
+
     Surface(
         color = MaterialTheme.colorScheme.primary,
         contentColor = MaterialTheme.colorScheme.onPrimary,
         shadowElevation = 4.dp
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = dateText,
-                style = MaterialTheme.typography.titleMedium
-            )
-            Text(
-                text = timeText,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = dateText,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = timeText,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Column(horizontalAlignment = Alignment.End) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = tempText,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(
+                        onClick = {
+                            ThemeStore.save(
+                                context,
+                                ThemeStore.settings.copy(mode = if (dark) 1 else 2)
+                            )
+                        },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) {
+                        Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
+                    }
+                }
+                Text(
+                    text = condText,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
     }
 }
