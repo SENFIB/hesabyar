@@ -13,7 +13,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -21,9 +20,43 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hesabyar.app.R
 import com.hesabyar.app.data.TransactionEntity
+
+// ================= ردیف چیپ‌های هم‌اندازه =================
+
+@Composable
+private fun <T> EqualChipRow(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    columns: Int = 3
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.chunked(columns).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                rowItems.forEach { (value, label) ->
+                    FilterChip(
+                        selected = selected == value,
+                        onClick = { onSelect(value) },
+                        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                repeat(columns - rowItems.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
 
 // ================= تب حسابداری با زیرتب‌ها =================
 
@@ -37,12 +70,20 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
     )
 
     Column(modifier = Modifier.fillMaxSize()) {
-        ScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp) {
+        // سه زیرتب با عرض برابر
+        TabRow(selectedTabIndex = tab) {
             titles.forEachIndexed { i, title ->
                 Tab(
                     selected = tab == i,
                     onClick = { tab = i },
-                    text = { Text(title) }
+                    text = {
+                        Text(
+                            title,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 )
             }
         }
@@ -59,16 +100,6 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
 // ================= گزارش‌ها =================
 
 @Composable
-private fun reportPeriodLabel(p: BackupPeriod): String = when (p) {
-    BackupPeriod.DAILY -> tr("روزانه", "Daily", "يومي")
-    BackupPeriod.WEEKLY -> tr("هفتگی", "Weekly", "أسبوعي")
-    BackupPeriod.MONTHLY -> tr("ماهانه", "Monthly", "شهري")
-    BackupPeriod.YEARLY -> tr("سالانه", "Yearly", "سنوي")
-    BackupPeriod.ALL -> tr("همه", "All", "الكل")
-    BackupPeriod.CUSTOM -> tr("از تا", "Custom", "مخصص")
-}
-
-@Composable
 fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val all by vm.transactions.collectAsState()
 
@@ -77,6 +108,40 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     var sortByAmount by rememberSaveable { mutableStateOf(false) }
     var fromText by rememberSaveable { mutableStateOf("") }
     var toText by rememberSaveable { mutableStateOf("") }
+
+    // گزینه‌ها فقط اینجا ساخته می‌شوند
+    val tPeriodLabel = tr("بازه زمانی", "Period", "الفترة")
+    val periodOptions = listOf(
+        BackupPeriod.DAILY to tr("روزانه", "Daily", "يومي"),
+        BackupPeriod.WEEKLY to tr("هفتگی", "Weekly", "أسبوعي"),
+        BackupPeriod.MONTHLY to tr("ماهانه", "Monthly", "شهري"),
+        BackupPeriod.YEARLY to tr("سالانه", "Yearly", "سنوي"),
+        BackupPeriod.ALL to tr("همه", "All", "الكل"),
+        BackupPeriod.CUSTOM to tr("از تا", "Custom", "مخصص")
+    )
+    val typeOptions = listOf(
+        0 to tr("همه", "All", "الكل"),
+        1 to stringResource(R.string.income),
+        2 to stringResource(R.string.expense)
+    )
+    val sortOptions = listOf(
+        false to tr("بر اساس تاریخ", "By date", "حسب التاريخ"),
+        true to tr("بر اساس مبلغ", "By amount", "حسب المبلغ")
+    )
+    val tFromLabel = tr("از تاریخ (مثلاً 2025/01/01)", "From (e.g. 2025/01/01)", "من (مثال 2025/01/01)")
+    val tToLabel = tr("تا تاریخ (مثلاً 2025/01/31)", "To (e.g. 2025/01/31)", "إلى (مثال 2025/01/31)")
+    val tDateHelp = tr(
+        "تاریخ‌ها را به شکل 2025/01/31 بنویسید.",
+        "Write dates like 2025/01/31.",
+        "اكتب التواريخ مثل 2025/01/31."
+    )
+    val tIncomeTotal = tr("مجموع درآمد", "Total income", "إجمالي الدخل")
+    val tExpenseTotal = tr("مجموع هزینه", "Total expense", "إجمالي المصروف")
+    val tBalance = tr("مانده (درآمد منهای هزینه)", "Balance (income minus expense)", "الرصيد (الدخل ناقص المصروف)")
+    val tByCategory = tr("بر اساس دسته‌بندی", "By category", "حسب الفئة")
+    val tListHeader = tr("فهرست تراکنش‌ها", "Transactions", "المعاملات")
+    val tNone = tr("موردی در این بازه نیست.", "No items in this period.", "لا توجد عناصر في هذه الفترة.")
+    val currency = stringResource(R.string.currency)
 
     val fromMs = parseBackupDay(fromText)
     val toMs = parseBackupDay(toText)
@@ -101,6 +166,7 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     } else {
         shown.sortedByDescending { it.dateMillis }
     }
+    val balanceText = formatMoney(income - expense) + " " + currency
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -108,22 +174,15 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text(tr("بازه زمانی", "Period", "الفترة"), style = MaterialTheme.typography.labelLarge)
+            Text(tPeriodLabel, style = MaterialTheme.typography.labelLarge)
         }
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                BackupPeriod.entries.chunked(3).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        row.forEach { p ->
-                            FilterChip(
-                                selected = period == p,
-                                onClick = { period = p },
-                                label = { Text(reportPeriodLabel(p)) }
-                            )
-                        }
-                    }
-                }
-            }
+            EqualChipRow(
+                options = periodOptions,
+                selected = period,
+                onSelect = { period = it },
+                columns = 3
+            )
         }
 
         if (period == BackupPeriod.CUSTOM) {
@@ -134,63 +193,40 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                         onValueChange = { fromText = it },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(tr("از تاریخ (مثلاً 2025/01/01)", "From (e.g. 2025/01/01)", "من (مثال 2025/01/01)")) }
+                        label = { Text(tFromLabel) }
                     )
                     OutlinedTextField(
                         value = toText,
                         onValueChange = { toText = it },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(tr("تا تاریخ (مثلاً 2025/01/31)", "To (e.g. 2025/01/31)", "إلى (مثال 2025/01/31)")) }
+                        label = { Text(tToLabel) }
                     )
                 }
             }
             if (customInvalid) {
                 item {
-                    Text(
-                        tr(
-                            "تاریخ‌ها را به شکل 2025/01/31 بنویسید.",
-                            "Write dates like 2025/01/31.",
-                            "اكتب التواريخ مثل 2025/01/31."
-                        ),
-                        color = MaterialTheme.colorScheme.error
-                    )
+                    Text(tDateHelp, color = MaterialTheme.colorScheme.error)
                 }
             }
         }
 
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilterChip(
-                        selected = typeFilter == 0,
-                        onClick = { typeFilter = 0 },
-                        label = { Text(tr("همه", "All", "الكل")) }
-                    )
-                    FilterChip(
-                        selected = typeFilter == 1,
-                        onClick = { typeFilter = 1 },
-                        label = { Text(stringResource(R.string.income)) }
-                    )
-                    FilterChip(
-                        selected = typeFilter == 2,
-                        onClick = { typeFilter = 2 },
-                        label = { Text(stringResource(R.string.expense)) }
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilterChip(
-                        selected = !sortByAmount,
-                        onClick = { sortByAmount = false },
-                        label = { Text(tr("مرتب‌سازی بر اساس تاریخ", "Sort by date", "ترتيب حسب التاريخ")) }
-                    )
-                    FilterChip(
-                        selected = sortByAmount,
-                        onClick = { sortByAmount = true },
-                        label = { Text(tr("مرتب‌سازی بر اساس مبلغ", "Sort by amount", "ترتيب حسب المبلغ")) }
-                    )
-                }
-            }
+            EqualChipRow(
+                options = typeOptions,
+                selected = typeFilter,
+                onSelect = { typeFilter = it },
+                columns = 3
+            )
+        }
+
+        item {
+            EqualChipRow(
+                options = sortOptions,
+                selected = sortByAmount,
+                onSelect = { sortByAmount = it },
+                columns = 2
+            )
         }
 
         item {
@@ -199,13 +235,13 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 SummaryBox(
-                    title = tr("مجموع درآمد", "Total income", "إجمالي الدخل"),
+                    title = tIncomeTotal,
                     value = income,
                     color = Color(0xFF2E7D32),
                     modifier = Modifier.weight(1f)
                 )
                 SummaryBox(
-                    title = tr("مجموع هزینه", "Total expense", "إجمالي المصروف"),
+                    title = tExpenseTotal,
                     value = expense,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.weight(1f)
@@ -216,12 +252,9 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
+                    Text(tBalance, style = MaterialTheme.typography.labelLarge)
                     Text(
-                        tr("مانده (درآمد منهای هزینه)", "Balance (income minus expense)", "الرصيد (الدخل ناقص المصروف)"),
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Text(
-                        "${formatMoney(income - expense)} ${stringResource(R.string.currency)}",
+                        balanceText,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -230,7 +263,7 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
         }
 
         item {
-            Text(tr("بر اساس دسته‌بندی", "By category", "حسب الفئة"), style = MaterialTheme.typography.titleMedium)
+            Text(tByCategory, style = MaterialTheme.typography.titleMedium)
         }
 
         items(groups) { (key, sum) ->
@@ -247,12 +280,12 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
         }
 
         item {
-            Text(tr("فهرست تراکنش‌ها", "Transactions", "المعاملات"), style = MaterialTheme.typography.titleMedium)
+            Text(tListHeader, style = MaterialTheme.typography.titleMedium)
         }
 
         if (details.isEmpty()) {
             item {
-                Text(tr("موردی در این بازه نیست.", "No items in this period.", "لا توجد عناصر في هذه الفترة."))
+                Text(tNone)
             }
         }
 
@@ -428,7 +461,34 @@ fun ChecksTab(regionType: CalendarType) {
     var level by rememberSaveable { mutableStateOf(2) }
     var errText by remember { mutableStateOf<String?>(null) }
 
-    // متن خطاها باید اینجا (داخل بدنه Compose) ساخته شوند، نه داخل onClick
+    // همه متن‌ها و گزینه‌ها داخل بدنه Compose ساخته می‌شوند
+    val kindOptions = listOf(
+        0 to tr("چک", "Cheque", "شيك"),
+        1 to tr("سفته", "Promissory note", "سند")
+    )
+    val directionOptions = listOf(
+        0 to tr("دریافتنی", "Receivable", "مستحق لنا"),
+        1 to tr("پرداختنی", "Payable", "مستحق علينا")
+    )
+    val remindOptions = REMIND_OPTIONS.map { d -> d to remindLabel(d) }
+    val levelOptions = listOf(
+        1 to tr("درجه ۱", "Level 1", "المستوى 1"),
+        2 to tr("درجه ۲", "Level 2", "المستوى 2"),
+        3 to tr("درجه ۳", "Level 3", "المستوى 3")
+    )
+    val tAddTitle = tr("ثبت چک یا سفته", "Add cheque or note", "إضافة شيك أو سند")
+    val tPartyLabel = tr("طرف حساب", "Person / party", "الطرف")
+    val tAmountLabel = stringResource(R.string.amount) + " (" + stringResource(R.string.currency) + ")"
+    val tDueLabel = tr("سررسید (مثلاً 2025/01/31)", "Due date (e.g. 2025/01/31)", "الاستحقاق (مثال 2025/01/31)")
+    val tRemindTitle = tr("هشدار قبل از سررسید", "Remind before due date", "تنبيه قبل الاستحقاق")
+    val tLevelTitle = tr("درجه اعلان", "Notification level", "درجة الإشعار")
+    val tAddBtn = stringResource(R.string.add)
+    val tUpcoming = tr("سررسیدهای نزدیک", "Upcoming due dates", "الاستحقاقات القريبة")
+    val tAllTitle = tr("همه چک‌ها و سفته‌ها", "All cheques and notes", "كل الشيكات والسندات")
+    val tNoEntries = tr("هنوز چکی ثبت نشده است.", "No entries yet.", "لا توجد عناصر بعد.")
+    val tDueWord = tr("سررسید", "Due", "الاستحقاق")
+
+    // متن خطاها هم اینجا ساخته می‌شوند، نه داخل onClick
     val errNameText = tr("نام طرف حساب را وارد کنید", "Enter the party name", "أدخل اسم الطرف")
     val errAmountText = tr("مبلغ معتبر وارد کنید", "Enter a valid amount", "أدخل مبلغاً صحيحاً")
     val errDateText = tr("تاریخ را به شکل 2025/01/31 بنویسید", "Write the date like 2025/01/31", "اكتب التاريخ مثل 2025/01/31")
@@ -447,40 +507,28 @@ fun ChecksTab(regionType: CalendarType) {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(tr("ثبت چک یا سفته", "Add cheque or note", "إضافة شيك أو سند"), style = MaterialTheme.typography.titleMedium)
+                    Text(tAddTitle, style = MaterialTheme.typography.titleMedium)
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = kind == 0,
-                            onClick = { kind = 0 },
-                            label = { Text(tr("چک", "Cheque", "شيك")) }
-                        )
-                        FilterChip(
-                            selected = kind == 1,
-                            onClick = { kind = 1 },
-                            label = { Text(tr("سفته", "Promissory note", "سند")) }
-                        )
-                    }
+                    EqualChipRow(
+                        options = kindOptions,
+                        selected = kind,
+                        onSelect = { kind = it },
+                        columns = 2
+                    )
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(
-                            selected = direction == 0,
-                            onClick = { direction = 0 },
-                            label = { Text(tr("دریافتنی", "Receivable", "مستحق لنا")) }
-                        )
-                        FilterChip(
-                            selected = direction == 1,
-                            onClick = { direction = 1 },
-                            label = { Text(tr("پرداختنی", "Payable", "مستحق علينا")) }
-                        )
-                    }
+                    EqualChipRow(
+                        options = directionOptions,
+                        selected = direction,
+                        onSelect = { direction = it },
+                        columns = 2
+                    )
 
                     OutlinedTextField(
                         value = person,
                         onValueChange = { person = it },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(tr("طرف حساب", "Person / party", "الطرف")) }
+                        label = { Text(tPartyLabel) }
                     )
 
                     OutlinedTextField(
@@ -490,7 +538,7 @@ fun ChecksTab(regionType: CalendarType) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         visualTransformation = ThousandsVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("${stringResource(R.string.amount)} (${stringResource(R.string.currency)})") }
+                        label = { Text(tAmountLabel) }
                     )
 
                     OutlinedTextField(
@@ -498,32 +546,24 @@ fun ChecksTab(regionType: CalendarType) {
                         onValueChange = { dueText = it },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text(tr("سررسید (مثلاً 2025/01/31)", "Due date (e.g. 2025/01/31)", "الاستحقاق (مثال 2025/01/31)")) }
+                        label = { Text(tDueLabel) }
                     )
 
-                    Text(tr("هشدار قبل از سررسید", "Remind before due date", "تنبيه قبل الاستحقاق"), style = MaterialTheme.typography.labelLarge)
-                    REMIND_OPTIONS.chunked(3).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            row.forEach { d ->
-                                FilterChip(
-                                    selected = remindDays == d,
-                                    onClick = { remindDays = d },
-                                    label = { Text(remindLabel(d)) }
-                                )
-                            }
-                        }
-                    }
+                    Text(tRemindTitle, style = MaterialTheme.typography.labelLarge)
+                    EqualChipRow(
+                        options = remindOptions,
+                        selected = remindDays,
+                        onSelect = { remindDays = it },
+                        columns = 3
+                    )
 
-                    Text(tr("درجه اعلان", "Notification level", "درجة الإشعار"), style = MaterialTheme.typography.labelLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(1, 2, 3).forEach { lv ->
-                            FilterChip(
-                                selected = level == lv,
-                                onClick = { level = lv },
-                                label = { Text(lv.toString()) }
-                            )
-                        }
-                    }
+                    Text(tLevelTitle, style = MaterialTheme.typography.labelLarge)
+                    EqualChipRow(
+                        options = levelOptions,
+                        selected = level,
+                        onSelect = { level = it },
+                        columns = 3
+                    )
                     Text(levelText(level), style = MaterialTheme.typography.bodySmall)
 
                     errText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -561,7 +601,7 @@ fun ChecksTab(regionType: CalendarType) {
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(stringResource(R.string.add))
+                        Text(tAddBtn)
                     }
                 }
             }
@@ -580,25 +620,22 @@ fun ChecksTab(regionType: CalendarType) {
                     )
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            tr("سررسیدهای نزدیک", "Upcoming due dates", "الاستحقاقات القريبة"),
-                            style = MaterialTheme.typography.titleSmall
-                        )
+                        Text(tUpcoming, style = MaterialTheme.typography.titleSmall)
                     }
                 }
             }
             items(alerts, key = { "alert_${it.id}" }) { c ->
-                AlertLine(c = c, regionType = regionType)
+                AlertLine(c = c, regionType = regionType, dueWord = tDueWord)
             }
         }
 
         item {
-            Text(tr("همه چک‌ها و سفته‌ها", "All cheques and notes", "كل الشيكات والسندات"), style = MaterialTheme.typography.titleMedium)
+            Text(tAllTitle, style = MaterialTheme.typography.titleMedium)
         }
 
         if (cheques.isEmpty()) {
             item {
-                Text(tr("هنوز چکی ثبت نشده است.", "No entries yet.", "لا توجد عناصر بعد."))
+                Text(tNoEntries)
             }
         }
 
@@ -620,19 +657,19 @@ fun ChecksTab(regionType: CalendarType) {
 }
 
 @Composable
-private fun AlertLine(c: Cheque, regionType: CalendarType) {
-    val dueText = formatWith(c.dueMillis, "yyyy/MM/dd", regionType.locale, deviceTimeZone())
+private fun AlertLine(c: Cheque, regionType: CalendarType, dueWord: String) {
+    val dueText = formatWith(c.dueMillis, "yyyy/MM/dd", regionType.locale, regionType.timeZone)
+    val currency = stringResource(R.string.currency)
+    val header = "⚠ " + c.person + " • " + formatMoney(c.amount) + " " + currency
+    val detail = dueWord + ": " + dueText + " • " + levelText(c.level)
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                "⚠ ${c.person} • ${formatMoney(c.amount)} ${stringResource(R.string.currency)}",
+                header,
                 style = MaterialTheme.typography.titleSmall,
                 color = if (c.level == 1) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             )
-            Text(
-                "${tr("سررسید", "Due", "الاستحقاق")}: $dueText • ${levelText(c.level)}",
-                style = MaterialTheme.typography.bodySmall
-            )
+            Text(detail, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -650,33 +687,36 @@ private fun ChequeRow(
     } else {
         tr("پرداختنی", "Payable", "مستحق علينا")
     }
-    val dueText = formatWith(c.dueMillis, "yyyy/MM/dd", regionType.locale, deviceTimeZone())
+    val tDueWord = tr("سررسید", "Due", "الاستحقاق")
+    val tMarkActive = tr("برگشت به فعال", "Mark active", "إعادة التفعيل")
+    val tMarkDone = tr("انجام شد", "Mark done", "تم")
+    val currency = stringResource(R.string.currency)
+    val dueText = formatWith(c.dueMillis, "yyyy/MM/dd", regionType.locale, regionType.timeZone)
+    val remindText = remindLabel(c.remindDays)
+    val levelDesc = levelText(c.level)
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text("$kindText • $dirText", style = MaterialTheme.typography.labelLarge)
+            Text(kindText + " • " + dirText, style = MaterialTheme.typography.labelLarge)
             Text(
                 c.person,
                 style = MaterialTheme.typography.titleMedium,
                 textDecoration = if (c.done) androidx.compose.ui.text.style.TextDecoration.LineThrough else null
             )
             Text(
-                "${formatMoney(c.amount)} ${stringResource(R.string.currency)} • ${tr("سررسید", "Due", "الاستحقاق")}: $dueText",
+                formatMoney(c.amount) + " " + currency + " • " + tDueWord + ": " + dueText,
                 style = MaterialTheme.typography.bodySmall
             )
             Text(
-                "${remindLabel(c.remindDays)} • ${levelText(c.level)}",
+                remindText + " • " + levelDesc,
                 style = MaterialTheme.typography.bodySmall
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onToggle) {
-                    Text(
-                        if (c.done) tr("برگشت به فعال", "Mark active", "إعادة التفعيل")
-                        else tr("انجام شد", "Mark done", "تم")
-                    )
+                    Text(if (c.done) tMarkActive else tMarkDone)
                 }
                 TextButton(onClick = onDelete) {
                     Text(stringResource(R.string.delete))
