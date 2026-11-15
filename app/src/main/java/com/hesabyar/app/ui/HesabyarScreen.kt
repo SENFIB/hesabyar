@@ -6,221 +6,152 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hesabyar.app.R
+import com.hesabyar.app.data.Category
 import com.hesabyar.app.data.TransactionEntity
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-val incomeCategories = listOf("حقوق", "فروش", "هدیه", "سایر")
-val expenseCategories = listOf("خوراک", "حمل‌ونقل", "قبض", "خرید", "تفریح", "سلامت", "سایر")
+import kotlinx.coroutines.delay
 
 @Composable
 fun HesabyarScreen(vm: MainViewModel = viewModel()) {
-    val transactions by vm.transactions.collectAsState()
+    var tab by rememberSaveable { mutableStateOf(0) }
+    val lang = LocalConfiguration.current.locales[0].language
+    val regionType = CalendarType.forLanguage(lang)
+    val deviceDate by vm.deviceDate.collectAsState()
+    val deviceTime by vm.deviceTime.collectAsState()
 
-    val totalIncome = transactions.filter { it.isIncome }.sumOf { it.amount }
-    val totalExpense = transactions.filter { !it.isIncome }.sumOf { it.amount }
-
-    Scaffold { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                SummaryCard(
-                    balance = totalIncome - totalExpense,
-                    income = totalIncome,
-                    expense = totalExpense
+    Scaffold(
+        topBar = {
+            ClockHeader(
+                regionType = regionType,
+                deviceDate = deviceDate,
+                deviceTime = deviceTime,
+                onToggleDate = { vm.toggleDeviceDate() },
+                onToggleTime = { vm.toggleDeviceTime() }
+            )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { Icon(Icons.Filled.Create, contentDescription = null) },
+                    label = { Text(stringResource(R.string.tab_ledger)) }
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { Icon(Icons.Filled.Home, contentDescription = null) },
+                    label = { Text(stringResource(R.string.tab_store)) }
+                )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    label = { Text(stringResource(R.string.tab_settings)) }
                 )
             }
-
-            item {
-                AddTransactionCard(onAdd = { title, amount, isIncome, category ->
-                    vm.add(title, amount, isIncome, category)
-                })
-            }
-
-            item {
-                Text("تراکنش‌ها", style = MaterialTheme.typography.titleMedium)
-            }
-
-            if (transactions.isEmpty()) {
-                item {
-                    Text("هنوز تراکنشی ثبت نشده است.")
-                }
-            }
-
-            items(transactions, key = { it.id }) { t ->
-                TransactionRow(t = t, onDelete = { vm.delete(t) })
+        }
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            when (tab) {
+                0 -> LedgerScreen(vm, regionType)
+                1 -> StoreScreen(vm, regionType)
+                else -> SettingsScreen(vm, regionType)
             }
         }
     }
 }
 
+// ---------- هدر ثابت: ساعت و تاریخ ----------
+
 @Composable
-fun SummaryCard(balance: Long, income: Long, expense: Long) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
+fun ClockHeader(
+    regionType: CalendarType,
+    deviceDate: Boolean,
+    deviceTime: Boolean,
+    onToggleDate: () -> Unit,
+    onToggleTime: () -> Unit
+) {
+    val now by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    val dateLocale = if (deviceDate) deviceLocale() else regionType.locale
+    val dateZone = if (deviceDate) deviceTimeZone() else regionType.timeZone
+    val timeLocale = if (deviceTime) deviceLocale() else regionType.locale
+    val timeZone = if (deviceTime) deviceTimeZone() else regionType.timeZone
+
+    val dateText = formatWith(now, "EEEE, yyyy/MM/dd", dateLocale, dateZone)
+    val timeText = formatWith(now, "HH:mm:ss", timeLocale, timeZone)
+    val sourceText = stringResource(if (deviceDate) R.string.source_device else regionType.label)
+
+    Surface(
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        shadowElevation = 4.dp
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("موجودی", style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = "${formatMoney(balance)} تومان",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("درآمد: ${formatMoney(income)}")
-                Text("هزینه: ${formatMoney(expense)}")
-            }
-        }
-    }
-}
-
-@Composable
-fun AddTransactionCard(onAdd: (String, Long, Boolean, String) -> Unit) {
-    var isIncome by remember { mutableStateOf(false) }
-    val categories = if (isIncome) incomeCategories else expenseCategories
-    var category by remember(isIncome) { mutableStateOf(categories.first()) }
-    var title by remember { mutableStateOf("") }
-    var amountText by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text("ثبت تراکنش جدید", style = MaterialTheme.typography.titleMedium)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = !isIncome,
-                    onClick = { isIncome = false },
-                    label = { Text("هزینه") }
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.app_name),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
-                FilterChip(
-                    selected = isIncome,
-                    onClick = { isIncome = true },
-                    label = { Text("درآمد") }
-                )
+                Text(sourceText, style = MaterialTheme.typography.labelLarge)
             }
 
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                label = { Text("توضیح") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = amountText,
-                onValueChange = { amountText = toLatinDigits(it) },
-                label = { Text("مبلغ (تومان)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                categories.forEach { c ->
-                    FilterChip(
-                        selected = category == c,
-                        onClick = { category = c },
-                        label = { Text(c) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = dateText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = onToggleDate,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onPrimary
                     )
+                ) {
+                    Text(stringResource(if (deviceDate) R.string.btn_to_region else R.string.btn_to_device))
                 }
             }
 
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error)
-            }
-
-            Button(
-                onClick = {
-                    val amount = amountText.filter { it.isDigit() }.toLongOrNull()
-                    if (title.isBlank()) {
-                        error = "لطفاً توضیح را وارد کنید"
-                    } else if (amount == null || amount <= 0L) {
-                        error = "مبلغ معتبر وارد کنید"
-                    } else {
-                        onAdd(title.trim(), amount, isIncome, category)
-                        title = ""
-                        amountText = ""
-                        error = null
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("ثبت")
-            }
-        }
-    }
-}
-
-@Composable
-fun TransactionRow(t: TransactionEntity, onDelete: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(t.title, style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "${t.category} • ${formatDate(t.dateMillis)}",
-                    style = MaterialTheme.typography.bodySmall
+                    text = timeText,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
-            }
-            Text(
-                text = (if (t.isIncome) "+" else "-") + formatMoney(t.amount),
-                color = if (t.isIncome) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Bold
-            )
-            TextButton(onClick = onDelete) {
-                Text("حذف")
+                TextButton(
+                    onClick = onToggleTime,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Text(stringResource(if (deviceTime) R.string.btn_to_region else R.string.btn_to_device))
+                }
             }
         }
     }
 }
-
-// ---------- توابع کمکی ----------
-
-fun formatMoney(value: Long): String = String.format(Locale.US, "%,d", value)
-
-fun formatDate(millis: Long): String =
-    SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US).format(Date(millis))
-
-// تبدیل ارقام فارسی/عربی به انگلیسی تا محاسبه درست انجام شود
-fun toLatinDigits(input: String): String = input.map { c ->
-    when (c) {
-        in '۰'..'۹' -> '0' + (c - '۰')
-        in '٠'..'٩' -> '0' + (c - '٠')
-        else -> c
-    }
-}.joinToString("")
