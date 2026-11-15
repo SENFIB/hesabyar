@@ -6,8 +6,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Create
@@ -24,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hesabyar.app.R
@@ -110,12 +109,13 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     }
 }
 
-// ---------- هدر: تاریخ و ساعت (دو خط) + آب‌وهوا + دکمه تم ----------
+// ---------- هدر: تاریخ و ساعت (دو خط) + شهر، دما و وضعیت هوا + دکمه تم ----------
 
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val context = LocalContext.current
     val lang = currentLang()
+    val is24 by ClockFormat.is24h.collectAsState()
 
     val now by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
@@ -128,7 +128,7 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val zone = if (deviceClock) deviceTimeZone() else regionType.timeZone
 
     val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
-    val timeText = formatWith(now, "HH:mm:ss", locale, zone)
+    val timeText = formatWith(now, ClockFormat.timePattern(is24), locale, zone)
 
     val dark = isDarkNow()
     val weather = WeatherStore.state
@@ -140,7 +140,9 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
         WeatherState.None -> "--°"
     }
     val condText = when (weather) {
-        is WeatherState.Ok -> conditionText(weather.info.code, lang)
+        is WeatherState.Ok -> listOf(weather.place, conditionText(weather.info.code, lang))
+            .filter { it.isNotBlank() }
+            .joinToString(" · ")
         WeatherState.Loading -> tr("در حال دریافت", "Loading", "جارٍ التحميل")
         WeatherState.Error -> tr("خطا در دریافت", "Fetch error", "خطأ في الجلب")
         WeatherState.None -> tr("موقعیت تنظیم نشده", "Location not set", "الموقع غير محدد")
@@ -160,12 +162,15 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = dateText,
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = timeText,
                     style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
                 )
             }
 
@@ -193,7 +198,10 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 }
                 Text(
                     text = condText,
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 220.dp)
                 )
             }
         }
@@ -292,6 +300,7 @@ fun AddTransactionCard(vm: MainViewModel) {
     var customName by remember(isIncome) { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
+    // فقط ارقام انگلیسی ذخیره می‌شوند؛ جداکننده فقط در نمایش اضافه می‌شود
     var amountText by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<Int?>(null) }
 
@@ -327,10 +336,11 @@ fun AddTransactionCard(vm: MainViewModel) {
 
             OutlinedTextField(
                 value = amountText,
-                onValueChange = { amountText = toLatinDigits(it) },
+                onValueChange = { amountText = digitsOnly(it) },
                 label = { Text("${stringResource(R.string.amount)} (${stringResource(R.string.currency)})") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                visualTransformation = ThousandsVisualTransformation(),
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -380,7 +390,7 @@ fun AddTransactionCard(vm: MainViewModel) {
 
             Button(
                 onClick = {
-                    val amount = amountText.filter { it.isDigit() }.toLongOrNull()
+                    val amount = amountText.toLongOrNull()
                     when {
                         title.isBlank() -> error = R.string.err_title
                         amount == null || amount <= 0L -> error = R.string.err_amount
@@ -409,8 +419,14 @@ fun AddTransactionCard(vm: MainViewModel) {
 
 @Composable
 fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Unit) {
+    val is24 by ClockFormat.is24h.collectAsState()
     val categoryText = categoryName(t.category)
-    val dateText = formatWith(t.dateMillis, "yyyy/MM/dd HH:mm", type.locale, type.timeZone)
+    val dateText = formatWith(
+        t.dateMillis,
+        "yyyy/MM/dd " + ClockFormat.timePattern(is24),
+        type.locale,
+        type.timeZone
+    )
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
