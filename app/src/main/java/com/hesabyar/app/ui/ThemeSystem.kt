@@ -1,4 +1,5 @@
 package com.hesabyar.app.ui
+
 import androidx.compose.ui.graphics.luminance
 import android.content.Context
 import androidx.compose.foundation.background
@@ -377,8 +378,10 @@ fun HesabyarTheme(content: @Composable () -> Unit) {
     )
 
     val density = LocalDensity.current
+    // رنگ پیش‌فرض متن هر جایی که رنگ مشخص نشده، همان رنگ خوانا روی زمینه است
     CompositionLocalProvider(
-        LocalDensity provides Density(density.density, density.fontScale * scale)
+        LocalDensity provides Density(density.density, density.fontScale * scale),
+        LocalContentColor provides onBackground
     ) {
         MaterialTheme(
             colorScheme = scheme,
@@ -453,6 +456,10 @@ fun AppBackground(content: @Composable () -> Unit) {
                     CircleShape
                 )
         )
-        content()
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onBackground
+        ) {
+            content()
+        }
     }
 }
