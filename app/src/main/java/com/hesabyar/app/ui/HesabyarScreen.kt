@@ -49,9 +49,10 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val deviceClock by vm.deviceClock.collectAsState()
     val tabsTop = ThemeStore.settings.tabsTop
 
-    // ۴ صفحه: ۰ حسابداری (شامل کالاها)، ۱ آب‌وهوا، ۲ مرورگر، ۳ تنظیمات
-    val pagerState = rememberPagerState(pageCount = { 4 })
+    // ۶ صفحه: ۰ حسابداری (شامل کالاها)، ۱ آب‌وهوا، ۲ مرورگر، ۳ یادداشت‌ها، ۴ دانلود، ۵ تنظیمات
+    val pagerState = rememberPagerState(pageCount = { 6 })
     val scope = rememberCoroutineScope()
+
     var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
 
     LaunchedEffect(Unit) {
@@ -64,11 +65,13 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         ClockHeader(regionType = regionType, deviceClock = deviceClock)
+
         if (tabsTop) {
             ThemePartScope(ThemePart.TABS) {
                 AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
             }
         }
+
         Box(modifier = Modifier
             .weight(1f)
             .fillMaxWidth()
@@ -82,11 +85,14 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
                         0 -> AccountingScreen(vm, regionType)
                         1 -> WeatherScreen(vm, regionType)
                         2 -> BrowserScreen()
+                        3 -> RemindersScreen(regionType)
+                        4 -> DownloadsScreen()
                         else -> SettingsScreen(vm, regionType)
                     }
                 }
             }
         }
+
         if (!tabsTop) {
             ThemePartScope(ThemePart.TABS) {
                 AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
@@ -101,17 +107,19 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
 
 // ---------- نوار تب‌ها (شیشه‌ای، بالا یا پایین) ----------
 // هر تب یا آیکون Material دارد یا یک نماد متنی (مثل 🌐) تا به کتابخانه آیکون اضافی نیاز نباشد
-
 private class BarTab(val label: String, val icon: ImageVector?, val glyph: String?)
 
 @Composable
 fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val base = partColor(ThemePart.TABS, MaterialTheme.colorScheme.surface)
     val on = onColorFor(base)
+
     val tabs = listOf(
         BarTab(stringResource(R.string.tab_ledger), Icons.Filled.Create, null),
         BarTab(stringResource(R.string.tab_weather), Icons.Filled.LocationOn, null),
         BarTab(tr("مرورگر", "Browser", "المتصفح"), null, "🌐"),
+        BarTab(tr("یادداشت‌ها", "Notes", "ملاحظات"), null, "🔔"),
+        BarTab(tr("دانلود", "Downloads", "التنزيلات"), null, "⬇"),
         BarTab(stringResource(R.string.tab_settings), Icons.Filled.Settings, null)
     )
 
@@ -120,7 +128,7 @@ fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .glass(base, RoundedCornerShape(22.dp))
-            .padding(horizontal = 6.dp, vertical = 6.dp),
+            .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         tabs.forEachIndexed { i, tab ->
@@ -158,7 +166,6 @@ fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 // ---------- هدر شیشه‌ای: دکمه تم، تاریخ و ساعت، آب‌وهوا ----------
-
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val context = LocalContext.current
@@ -170,10 +177,13 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
             delay(1000)
         }
     }
+
     val locale = if (deviceClock) deviceLocale() else regionType.locale
     val zone = if (deviceClock) deviceTimeZone() else regionType.timeZone
+
     val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
     val timeText = formatWith(now, ClockFormat.timePattern(is24), locale, zone)
+
     val dark = isDarkNow()
     val weather = WeatherStore.state
     val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
@@ -190,6 +200,7 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
         WeatherState.Error -> "--°"
         WeatherState.None -> "--°"
     }
+
     val placeText = when (weather) {
         is WeatherState.Ok -> listOf(weather.place, conditionWord(weather.info.code, lang))
             .filter { it.isNotBlank() }
@@ -226,6 +237,7 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 ) {
                     Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
                 }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = dateText,
@@ -242,6 +254,7 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                         maxLines = 1
                     )
                 }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
@@ -268,7 +281,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
 }
 
 // ---------- تب حسابداری (بخش تراکنش‌ها؛ زیرتب‌ها در AccountingScreen هستند) ----------
-
 @Composable
 fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
     val transactions by vm.transactions.collectAsState()
@@ -349,6 +361,7 @@ fun AddTransactionCard(vm: MainViewModel) {
     val predefined = Category.entries.filter { it.isIncome == isIncome && it != Category.SALE }
     val customs = if (isIncome) customIncome else customExpense
     val options = predefined.map { it.key } + customs.map { CUSTOM_PREFIX + it }
+
     var selected by remember(isIncome) { mutableStateOf(predefined.first().key) }
     var customName by remember(isIncome) { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
@@ -365,6 +378,7 @@ fun AddTransactionCard(vm: MainViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(stringResource(R.string.add_transaction), style = MaterialTheme.typography.titleMedium)
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = !isIncome,
@@ -377,6 +391,7 @@ fun AddTransactionCard(vm: MainViewModel) {
                     label = { Text(stringResource(R.string.income)) }
                 )
             }
+
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
@@ -384,6 +399,7 @@ fun AddTransactionCard(vm: MainViewModel) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
+
             OutlinedTextField(
                 value = amountText,
                 onValueChange = { amountText = digitsOnly(it) },
@@ -393,6 +409,7 @@ fun AddTransactionCard(vm: MainViewModel) {
                 visualTransformation = ThousandsVisualTransformation(),
                 modifier = Modifier.fillMaxWidth()
             )
+
             ExposedDropdownMenuBox(
                 expanded = expanded,
                 onExpandedChange = { expanded = it }
@@ -422,6 +439,7 @@ fun AddTransactionCard(vm: MainViewModel) {
                     }
                 }
             }
+
             if (isOther) {
                 OutlinedTextField(
                     value = customName,
@@ -431,9 +449,11 @@ fun AddTransactionCard(vm: MainViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 )
             }
+
             error?.let {
                 Text(stringResource(it), color = MaterialTheme.colorScheme.error)
             }
+
             Button(
                 onClick = {
                     val amount = amountText.toLongOrNull()
