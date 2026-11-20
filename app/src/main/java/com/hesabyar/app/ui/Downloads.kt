@@ -1,4 +1,5 @@
 package com.hesabyar.app.ui
+
 import com.hesabyar.app.MainActivity
 import androidx.compose.ui.Alignment
 import android.app.Notification
@@ -18,9 +19,9 @@ import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -45,9 +46,11 @@ import kotlin.coroutines.coroutineContext
 
 const val DL_DB_NAME = "hesabyar_downloads.db"
 const val DL_PREFS = "hesabyar_downloads"
+
 private const val DL_CH = "dl_channel"
 private const val DL_NOTIF_ID = 4101
 private const val DL_MAX_PARALLEL = 3
+private const val DL_PROGRESS_EVERY_MS = 1000L
 private const val DL_UA =
     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 
@@ -129,8 +132,10 @@ private class DlDbHelper(ctx: Context) : SQLiteOpenHelper(ctx, DL_DB_NAME, null,
 
 object DlStore {
     val flow = MutableStateFlow<List<DlItem>>(emptyList())
+
     /** کار فعال هر دانلود (برای توقف) */
     val jobs = ConcurrentHashMap<Long, Job>()
+
     /** زبان برنامه؛ برای متن اعلان سرویس */
     var lang: String = Locale.getDefault().language
 
@@ -147,6 +152,7 @@ object DlStore {
 
     private fun db(): SQLiteDatabase = helper!!.writableDatabase
 
+    /** خواندن کامل جدول؛ فقط وقتی لازم است که لیست تغییر ساختار می‌دهد */
     private fun load() {
         val out = ArrayList<DlItem>()
         db().query("downloads", null, null, null, null, null, "id ASC").use { c ->
@@ -160,6 +166,11 @@ object DlStore {
             }
         }
         flow.value = out
+    }
+
+    /** به‌روزرسانی یک ردیف در حافظه بدون خواندن دوباره دیتابیس */
+    private fun patch(id: Long, change: (DlItem) -> DlItem) {
+        flow.value = flow.value.map { if (it.id == id) change(it) else it }
     }
 
     private fun fileNameFrom(url: String): String {
@@ -211,7 +222,7 @@ object DlStore {
             put("error", error)
         }
         db().update("downloads", cv, "id = ?", arrayOf(id.toString()))
-        load()
+        patch(id) { it.copy(status = status, error = error) }
     }
 
     @Synchronized
@@ -221,7 +232,7 @@ object DlStore {
             put("total", total)
         }
         db().update("downloads", cv, "id = ?", arrayOf(id.toString()))
-        load()
+        patch(id) { it.copy(done = done, total = total) }
     }
 
     @Synchronized
@@ -273,8 +284,10 @@ fun startDownloadService(ctx: Context) {
 }
 
 class DownloadService : Service() {
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loop: Job? = null
+    private var lastNotifText = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -396,7 +409,7 @@ class DownloadService : Service() {
                         }
 
                         val now = System.currentTimeMillis()
-                        if (now - lastUi > 800) {
+                        if (now - lastUi > DL_PROGRESS_EVERY_MS) {
                             DlStore.setProgress(item.id, done, total)
                             lastUi = now
                         }
@@ -418,17 +431,22 @@ class DownloadService : Service() {
         )
     }
 
-    private fun buildNotification(): Notification {
+    /** متن اعلان فقط از تعداد کارها ساخته می‌شود تا بتوان تشخیص داد چیزی عوض شده یا نه */
+    private fun notifText(): String {
         val lang = DlStore.lang
         val list = DlStore.flow.value
         val running = list.count { it.status == "running" }
         val queued = list.count { it.status == "queued" }
-        val text = remPick(
+        return remPick(
             lang,
             "" + running + " در حال دانلود · " + queued + " در صف",
             "" + running + " downloading · " + queued + " queued",
             "" + running + " جارٍ التنزيل · " + queued + " في الانتظار"
         )
+    }
+
+    private fun buildNotification(text: String): Notification {
+        val lang = DlStore.lang
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -444,7 +462,9 @@ class DownloadService : Service() {
     }
 
     private fun showForeground() {
-        val n = buildNotification()
+        val text = notifText()
+        lastNotifText = text
+        val n = buildNotification(text)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(DL_NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -452,9 +472,13 @@ class DownloadService : Service() {
         }
     }
 
+    /** اعلان فقط وقتی دوباره ساخته می‌شود که متنش واقعاً تغییر کرده باشد */
     private fun updateNotification() {
+        val text = notifText()
+        if (text == lastNotifText) return
+        lastNotifText = text
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(DL_NOTIF_ID, buildNotification())
+        nm.notify(DL_NOTIF_ID, buildNotification(text))
     }
 }
 
@@ -505,13 +529,21 @@ private fun DlRow(item: DlItem, lang: String, ctx: Context) {
 fun DownloadsScreen() {
     val ctx = LocalContext.current
     val lang = currentLang()
-    DlStore.lang = lang
     val list by DlStore.flow.collectAsState()
 
+    LaunchedEffect(lang) { DlStore.lang = lang }
     LaunchedEffect(Unit) {
         DlStore.init(ctx)
         if (DlSettings.autoStart(ctx) && DlStore.flow.value.any { it.status == "queued" }) {
             startDownloadService(ctx)
+        }
+    }
+
+    // وضعیت شبکه هر ۳ ثانیه یک بار و خارج از بدنه ترسیم بررسی می‌شود
+    val reason by produceState<String?>(initialValue = null) {
+        while (true) {
+            value = withContext(Dispatchers.IO) { DlPolicy.blockReason(ctx) }
+            delay(3000)
         }
     }
 
@@ -526,8 +558,8 @@ fun DownloadsScreen() {
     var endH by remember { mutableStateOf(DlSettings.endHour(ctx).toString()) }
     var speed by remember { mutableStateOf(DlSettings.speedKb(ctx).toString()) }
 
-    val reason = DlPolicy.blockReason(ctx)
-    val folder = dlFolder(ctx).absolutePath
+    val folder = remember(ctx) { dlFolder(ctx).absolutePath }
+
     val errUrl = p(
         "لینک معتبر وارد کنید (با http یا https شروع شود)",
         "Enter a valid link starting with http or https",
@@ -538,156 +570,169 @@ fun DownloadsScreen() {
     val waitNet = p("در انتظار اتصال اینترنت", "Waiting for internet", "بانتظار الإنترنت")
     val waitSched = p("خارج از بازه زمانی دانلود", "Outside the download window", "خارج نافذة التنزيل")
 
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            p("مدیریت دانلود", "Download manager", "مدير التنزيل"),
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
+        item {
+            Text(
+                p("مدیریت دانلود", "Download manager", "مدير التنزيل"),
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
 
         // افزودن لینک
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text(p("لینک فایل", "File link", "رابط الملف")) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (msg.isNotEmpty()) Text(msg, color = MaterialTheme.colorScheme.primary)
-                Button(
-                    onClick = {
-                        val u = url.trim()
-                        if (!(u.startsWith("http://") || u.startsWith("https://"))) {
-                            msg = errUrl
-                            return@Button
-                        }
-                        DlStore.add(u)
-                        if (DlSettings.autoStart(ctx)) startDownloadService(ctx)
-                        url = ""
-                        msg = addedMsg
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(p("افزودن به صف", "Add to queue", "إضافة إلى القائمة"))
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = url,
+                        onValueChange = { url = it },
+                        label = { Text(p("لینک فایل", "File link", "رابط الملف")) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (msg.isNotEmpty()) Text(msg, color = MaterialTheme.colorScheme.primary)
+                    Button(
+                        onClick = {
+                            val u = url.trim()
+                            if (!(u.startsWith("http://") || u.startsWith("https://"))) {
+                                msg = errUrl
+                                return@Button
+                            }
+                            DlStore.add(u)
+                            if (DlSettings.autoStart(ctx)) startDownloadService(ctx)
+                            url = ""
+                            msg = addedMsg
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(p("افزودن به صف", "Add to queue", "إضافة إلى القائمة"))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { startDownloadService(ctx) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(p("شروع همه", "Start all", "ابدأ الكل")) }
+                        OutlinedButton(
+                            onClick = { DlStore.pauseAll() },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(p("توقف همه", "Pause all", "إيقاف الكل")) }
+                    }
+                    Text(
+                        p("پوشه ذخیره: ", "Save folder: ", "مجلد الحفظ: ") + folder,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = { startDownloadService(ctx) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(p("شروع همه", "Start all", "ابدأ الكل")) }
-                    OutlinedButton(
-                        onClick = { DlStore.pauseAll() },
-                        modifier = Modifier.weight(1f)
-                    ) { Text(p("توقف همه", "Pause all", "إيقاف الكل")) }
-                }
-                Text(
-                    p("پوشه ذخیره: ", "Save folder: ", "مجلد الحفظ: ") + folder,
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
 
         // تنظیمات
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(p("تنظیمات دانلود", "Download settings", "إعدادات التنزيل"), fontWeight = FontWeight.Bold)
-
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(p("فقط با Wi-Fi", "Wi-Fi only", "فقط عبر Wi-Fi"), modifier = Modifier.weight(1f))
-                    Switch(checked = wifiOnly, onCheckedChange = {
-                        wifiOnly = it
-                        DlSettings.set(ctx, "wifi_only", it)
-                    })
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(p("شروع خودکار صف", "Auto start queue", "بدء القائمة تلقائيًا"), modifier = Modifier.weight(1f))
-                    Switch(checked = autoStart, onCheckedChange = {
-                        autoStart = it
-                        DlSettings.set(ctx, "auto_start", it)
-                    })
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(p("زمان‌بندی روزانه", "Daily schedule", "جدولة يومية"), modifier = Modifier.weight(1f))
-                    Switch(checked = schedOn, onCheckedChange = {
-                        schedOn = it
-                        DlSettings.set(ctx, "sched_on", it)
-                    })
-                }
-                if (schedOn) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedTextField(
-                            value = startH,
-                            onValueChange = { v ->
-                                startH = v
-                                toLatinDigits(v).toIntOrNull()?.let { if (it in 0..23) DlSettings.set(ctx, "start_h", it) }
-                            },
-                            label = { Text(p("شروع (ساعت ۰ تا ۲۳)", "Start hour (0–23)", "ساعة البدء (0–23)")) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = endH,
-                            onValueChange = { v ->
-                                endH = v
-                                toLatinDigits(v).toIntOrNull()?.let { if (it in 0..23) DlSettings.set(ctx, "end_h", it) }
-                            },
-                            label = { Text(p("پایان (ساعت ۰ تا ۲۳)", "End hour (0–23)", "ساعة الانتهاء (0–23)")) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(p("تنظیمات دانلود", "Download settings", "إعدادات التنزيل"), fontWeight = FontWeight.Bold)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(p("فقط با Wi-Fi", "Wi-Fi only", "فقط عبر Wi-Fi"), modifier = Modifier.weight(1f))
+                        Switch(checked = wifiOnly, onCheckedChange = {
+                            wifiOnly = it
+                            DlSettings.set(ctx, "wifi_only", it)
+                        })
                     }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(p("شروع خودکار صف", "Auto start queue", "بدء القائمة تلقائيًا"), modifier = Modifier.weight(1f))
+                        Switch(checked = autoStart, onCheckedChange = {
+                            autoStart = it
+                            DlSettings.set(ctx, "auto_start", it)
+                        })
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(p("زمان‌بندی روزانه", "Daily schedule", "جدولة يومية"), modifier = Modifier.weight(1f))
+                        Switch(checked = schedOn, onCheckedChange = {
+                            schedOn = it
+                            DlSettings.set(ctx, "sched_on", it)
+                        })
+                    }
+                    if (schedOn) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = startH,
+                                onValueChange = { v ->
+                                    startH = v
+                                    toLatinDigits(v).toIntOrNull()?.let { if (it in 0..23) DlSettings.set(ctx, "start_h", it) }
+                                },
+                                label = { Text(p("شروع (ساعت ۰ تا ۲۳)", "Start hour (0–23)", "ساعة البدء (0–23)")) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = endH,
+                                onValueChange = { v ->
+                                    endH = v
+                                    toLatinDigits(v).toIntOrNull()?.let { if (it in 0..23) DlSettings.set(ctx, "end_h", it) }
+                                },
+                                label = { Text(p("پایان (ساعت ۰ تا ۲۳)", "End hour (0–23)", "ساعة الانتهاء (0–23)")) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = speed,
+                        onValueChange = { v ->
+                            speed = v
+                            toLatinDigits(v).toIntOrNull()?.let { if (it >= 0) DlSettings.set(ctx, "speed_kb", it) }
+                        },
+                        label = { Text(p("سرعت محدود (کیلوبایت بر ثانیه، ۰ = بدون محدودیت)", "Speed limit (KB/s, 0 = unlimited)", "حد السرعة (ك.ب/ث، 0 = بدون حد)")) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
-                OutlinedTextField(
-                    value = speed,
-                    onValueChange = { v ->
-                        speed = v
-                        toLatinDigits(v).toIntOrNull()?.let { if (it >= 0) DlSettings.set(ctx, "speed_kb", it) }
-                    },
-                    label = { Text(p("سرعت محدود (کیلوبایت بر ثانیه، ۰ = بدون محدودیت)", "Speed limit (KB/s, 0 = unlimited)", "حد السرعة (ك.ب/ث، 0 = بدون حد)")) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         }
 
         // وضعیت صف
-        if (reason != null && list.any { it.status == "queued" }) {
-            val why = when (reason) {
-                "wifi" -> waitWifi
-                "schedule" -> waitSched
-                else -> waitNet
-            }
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
-            ) {
-                Text(why, modifier = Modifier.padding(12.dp))
+        val currentReason = reason
+        if (currentReason != null && list.any { it.status == "queued" }) {
+            item {
+                val why = when (currentReason) {
+                    "wifi" -> waitWifi
+                    "schedule" -> waitSched
+                    else -> waitNet
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                ) {
+                    Text(why, modifier = Modifier.padding(12.dp))
+                }
             }
         }
 
         // فهرست دانلودها
-        Text(p("صف دانلود", "Download queue", "قائمة التنزيل"), fontWeight = FontWeight.Bold)
+        item {
+            Text(p("صف دانلود", "Download queue", "قائمة التنزيل"), fontWeight = FontWeight.Bold)
+        }
         if (list.isEmpty()) {
-            Text(
-                p("هنوز دانلودی اضافه نشده است.", "No downloads yet.", "لم تتم إضافة أي تنزيل بعد."),
-                style = MaterialTheme.typography.bodySmall
-            )
+            item {
+                Text(
+                    p("هنوز دانلودی اضافه نشده است.", "No downloads yet.", "لم تتم إضافة أي تنزيل بعد."),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
-        list.reversed().forEach { item ->
-            DlRow(item = item, lang = lang, ctx = ctx)
+        items(list.reversed(), key = { it.id }) { dl ->
+            DlRow(item = dl, lang = lang, ctx = ctx)
         }
-        Spacer(Modifier.height(24.dp))
+        item {
+            Spacer(Modifier.height(24.dp))
+        }
     }
 }
