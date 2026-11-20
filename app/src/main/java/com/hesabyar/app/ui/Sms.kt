@@ -1,10 +1,13 @@
 package com.hesabyar.app.ui
-import androidx.compose.ui.Alignment
+
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.sqlite.SQLiteDatabase
+import android.net.Uri
+import android.provider.Settings
 import android.provider.Telephony
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,22 +17,25 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.hesabyar.app.MainActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 // دیتابیس پیامک‌های واردشده؛ در بکاپ هم ذخیره می‌شود (خط BACKUP_DBS را ببین)
 const val SMS_DB_NAME = "hesabyar_sms.db"
+
 private const val SMS_PREFS = "hesabyar_sms"
 private const val SMS_SENDERS_KEY = "senders"
 private const val SMS_SCAN_LIMIT = 1000
@@ -205,13 +211,14 @@ private fun guessIncome(body: String): Boolean {
     return inc && !exp
 }
 
-private fun smsDateText(millis: Long): String =
-    SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US).format(Date(millis))
+// تاریخ پیامک بر اساس تقویم و منطقه زمانی زبان انتخابی
+private fun smsDateText(millis: Long, type: CalendarType): String =
+    formatWith(millis, "yyyy/MM/dd HH:mm", type.locale, type.timeZone)
 
 // ---------- زیرتب پیامک‌ها در حسابداری ----------
 
 @Composable
-fun SmsTab(vm: MainViewModel) {
+fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -238,7 +245,6 @@ fun SmsTab(vm: MainViewModel) {
     val tScan = tr("نمایش پیامک‌های این سرشماره‌ها", "Show messages from these senders", "عرض الرسائل من هؤلاء المرسلين")
     val tLoading = tr("در حال خواندن پیامک‌ها...", "Reading messages...", "جارٍ قراءة الرسائل...")
     val tFoundTitle = tr("پیامک‌های پیدا شده", "Messages found", "الرسائل الموجودة")
-    val tNothing = tr("پیامکی از این سرشماره‌ها پیدا نشد.", "No messages found from these senders.", "لم يُعثر على رسائل من هؤلاء المرسلين.")
     val tAddToApp = tr("افزودن به برنامه", "Add to app", "إضافة إلى التطبيق")
     val tAdded = tr("افزوده شد ✓", "Added ✓", "أُضيفت ✓")
     val tImportedTitle = tr("پیامک‌های افزوده‌شده", "Added messages", "الرسائل المضافة")
@@ -254,22 +260,59 @@ fun SmsTab(vm: MainViewModel) {
     val tNeedSender = tr("اول یک سرشماره اضافه کنید.", "Add a sender number first.", "أضف رقم مرسل أولاً.")
     val tSavedTx = tr("تراکنش ثبت شد ✓", "Transaction recorded ✓", "تم تسجيل المعاملة ✓")
     val tNoPerm = tr("اجازه پیامک داده نشد.", "SMS permission was not granted.", "لم يُمنح إذن الرسائل.")
+    val tNotFound = tr("پیامکی از این سرشماره‌ها پیدا نشد.", "No messages found from these senders.", "لم يُعثر على رسائل من هؤلاء المرسلين.")
+    val tDeniedHelp = tr(
+        "اگر پنجره اجازه باز نشد یا اجازه داده نشد، از تنظیمات برنامه، دسترسی پیامک را فعال کنید.",
+        "If the permission window did not open or was refused, enable SMS in the app settings.",
+        "إذا لم تظهر نافذة الإذن أو رُفض، فعّل الرسائل من إعدادات التطبيق."
+    )
+    val tOpenAppSettings = tr("باز کردن تنظیمات برنامه", "Open app settings", "فتح إعدادات التطبيق")
 
     var granted by remember { mutableStateOf(hasSmsPermission(ctx)) }
+    var deniedOnce by remember { mutableStateOf(false) }
     var askDialog by remember { mutableStateOf(false) }
     var senders by remember { mutableStateOf(loadSenders(ctx)) }
     var newSender by remember { mutableStateOf("") }
     var found by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
-    var imported by remember { mutableStateOf(loadImported(ctx)) }
+    var imported by remember { mutableStateOf<List<ImportedSms>>(emptyList()) }
     var editing by remember { mutableStateOf<ImportedSms?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
 
+    // خواندن فهرست پیامک‌های ذخیره‌شده، بیرون از رابط کاربری
+    LaunchedEffect(Unit) {
+        imported = withContext(Dispatchers.IO) { loadImported(ctx) }
+    }
+
+    // بعد از برگشت به برنامه، وضعیت واقعی دسترسی دوباره خوانده می‌شود
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                granted = hasSmsPermission(ctx)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { ok ->
-        granted = ok
-        message = if (ok) null else tNoPerm
+    ) { _ ->
+        // به جواب پنجره اعتماد نمی‌کنیم؛ وضعیت واقعی گوشی خوانده می‌شود
+        granted = hasSmsPermission(ctx)
+        deniedOnce = !granted
+        message = if (granted) null else tNoPerm
+    }
+
+    val openAppSettings: () -> Unit = {
+        MainActivity.skipAutoLock = true
+        runCatching {
+            ctx.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
     }
 
     fun scan() {
@@ -285,7 +328,7 @@ fun SmsTab(vm: MainViewModel) {
             loading = true
             found = withContext(Dispatchers.IO) { readInboxFor(ctx, senders) }
             loading = false
-            message = null
+            message = if (found.isEmpty()) tNotFound else null
         }
     }
 
@@ -321,6 +364,12 @@ fun SmsTab(vm: MainViewModel) {
                     Button(onClick = { askDialog = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(tAskBtn)
                     }
+                    if (deniedOnce) {
+                        Text(tDeniedHelp, style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = openAppSettings, modifier = Modifier.fillMaxWidth()) {
+                            Text(tOpenAppSettings)
+                        }
+                    }
                 }
             }
         }
@@ -354,7 +403,6 @@ fun SmsTab(vm: MainViewModel) {
                 ) {
                     Text(tAddSender)
                 }
-
                 if (senders.isEmpty()) {
                     Text(tNoSenders, style = MaterialTheme.typography.bodySmall)
                 }
@@ -373,7 +421,6 @@ fun SmsTab(vm: MainViewModel) {
                         }
                     }
                 }
-
                 OutlinedButton(onClick = { scan() }, modifier = Modifier.fillMaxWidth()) {
                     Text(tScan)
                 }
@@ -381,7 +428,6 @@ fun SmsTab(vm: MainViewModel) {
         }
 
         message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-
         if (loading) {
             Text(tLoading, style = MaterialTheme.typography.bodySmall)
         }
@@ -397,7 +443,7 @@ fun SmsTab(vm: MainViewModel) {
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            m.sender + "  ·  " + smsDateText(m.dateMillis),
+                            m.sender + "  ·  " + smsDateText(m.dateMillis, regionType),
                             style = MaterialTheme.typography.labelMedium
                         )
                         Text(m.body, style = MaterialTheme.typography.bodyMedium)
@@ -409,8 +455,6 @@ fun SmsTab(vm: MainViewModel) {
                     }
                 }
             }
-        } else if (!loading && found.isEmpty() && message == null && senders.isNotEmpty()) {
-            // اگر قبلاً جست‌وجو شده و چیزی نبوده، پیام نشان داده شود
         }
 
         // پیامک‌های افزوده‌شده به برنامه
@@ -425,12 +469,16 @@ fun SmsTab(vm: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        item.sender + "  ·  " + smsDateText(item.dateMillis),
+                        item.sender + "  ·  " + smsDateText(item.dateMillis, regionType),
                         style = MaterialTheme.typography.labelMedium
                     )
                     Text(item.body, style = MaterialTheme.typography.bodyMedium)
                     if (item.amount > 0) {
-                        Text(formatMoney(item.amount), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            formatMoney(item.amount),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (item.done) {
@@ -453,6 +501,8 @@ fun SmsTab(vm: MainViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     askDialog = false
+                    // جلوگیری از قفل شدن برنامه هنگام نمایش پنجره اجازه
+                    MainActivity.skipAutoLock = true
                     permLauncher.launch(Manifest.permission.READ_SMS)
                 }) {
                     Text(tAllow)
