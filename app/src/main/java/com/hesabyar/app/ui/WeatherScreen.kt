@@ -19,6 +19,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
+// تبدیل ارقام انگلیسی به ارقام زبان برنامه: fa ۱۲۳، ar ١٢٣، en 123
+fun langDigits(text: String, lang: String): String {
+    val table = when (lang) {
+        "fa" -> "۰۱۲۳۴۵۶۷۸۹"
+        "ar" -> "٠١٢٣٤٥٦٧٨٩"
+        else -> return text
+    }
+    val sb = StringBuilder(text.length)
+    for (ch in text) {
+        if (ch in '0'..'9') sb.append(table[ch - '0']) else sb.append(ch)
+    }
+    return sb.toString()
+}
+
 @Composable
 fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
     val ctx = LocalContext.current
@@ -29,12 +43,10 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
     var showManual by rememberSaveable { mutableStateOf(false) }
     var gpsBusy by remember { mutableStateOf(false) }
     var gpsReason by remember { mutableStateOf<GpsFail?>(null) }
-    var autoHours by remember { mutableStateOf(WeatherAuto.hours(ctx)) }
 
     LaunchedEffect(Unit) {
         WeatherStore.loadUnit(ctx)
         WeatherStore.onScreenOpened(ctx)
-        WeatherAuto.ensure(ctx)
     }
 
     // همه متن‌ها اینجا ساخته می‌شوند
@@ -71,28 +83,14 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
     val tRefresh = tr("به‌روزرسانی", "Refresh", "تحديث")
     val tNext24 = tr("۲۴ ساعت آینده", "Next 24 hours", "الساعات الـ24 القادمة")
     val tForecastTitle = tr("پیش‌بینی ۵ روز آینده", "5-day forecast", "توقعات 5 أيام")
-
-    // به‌روزرسانی خودکار
-    val tAutoTitle = tr("به‌روزرسانی خودکار", "Auto update", "التحديث التلقائي")
-    val tAutoHint = tr(
-        "هر چند ساعت یک بار، وقتی گوشی به اینترنت وصل باشد، اطلاعات هوا تازه می‌شود.",
-        "Refreshes every few hours when the phone is online.",
-        "يتم التحديث كل بضع ساعات عند توفر الإنترنت."
-    )
-    val autoOptions: List<Pair<Int, String>> = listOf(
-        0 to tr("خاموش", "Off", "إيقاف"),
-        1 to tr("هر ۱ ساعت", "Every 1 h", "كل ساعة"),
-        2 to tr("هر ۲ ساعت", "Every 2 h", "كل ساعتين"),
-        6 to tr("هر ۶ ساعت", "Every 6 h", "كل 6 ساعات"),
-        12 to tr("هر ۱۲ ساعت", "Every 12 h", "كل 12 ساعة"),
-        24 to tr("هر ۲۴ ساعت", "Every 24 h", "كل 24 ساعة")
-    )
-
-    // زمان آخرین به‌روزرسانی
-    val lastMs = WeatherStore.lastUpdatedMillis(ctx)
     val tLastPrefix = tr("آخرین به‌روزرسانی: ", "Last updated: ", "آخر تحديث: ")
+
+    val lastMs = WeatherStore.lastUpdatedMillis(ctx)
     val lastText = if (lastMs > 0L) {
-        tLastPrefix + formatWith(lastMs, "yyyy/MM/dd HH:mm", regionType.locale, regionType.timeZone)
+        tLastPrefix + langDigits(
+            formatWith(lastMs, "yyyy/MM/dd HH:mm", regionType.locale, regionType.timeZone),
+            lang
+        )
     } else {
         ""
     }
@@ -113,14 +111,12 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
             gpsReason = r
         }
     )
-
     val gpsMessage: String? = when (gpsReason) {
         GpsFail.SERVICES_OFF -> tMsgOff
         GpsFail.NOT_FOUND -> tMsgNotFound
         GpsFail.DENIED -> tMsgDenied
         null -> null
     }
-
     val openLocationSettings: () -> Unit = {
         runCatching {
             ctx.startActivity(
@@ -153,7 +149,7 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                                 Spacer(Modifier.width(12.dp))
                                 Column {
                                     Text(
-                                        text = tempText(state.info.current, unitF),
+                                        text = langDigits(tempText(state.info.current, unitF), lang),
                                         style = MaterialTheme.typography.displayMedium,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -165,7 +161,10 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                             }
                             state.info.days.firstOrNull()?.let { today ->
                                 Text(
-                                    text = "▼ " + tempText(today.min, unitF) + "   ▲ " + tempText(today.max, unitF),
+                                    text = langDigits(
+                                        "▼ " + tempText(today.min, unitF) + "   ▲ " + tempText(today.max, unitF),
+                                        lang
+                                    ),
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             }
@@ -229,37 +228,6 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
             }
         }
 
-        // به‌روزرسانی خودکار
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(tAutoTitle, style = MaterialTheme.typography.titleSmall)
-                    Text(tAutoHint, style = MaterialTheme.typography.bodySmall)
-                    autoOptions.chunked(3).forEach { rowItems ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            rowItems.forEach { (value, label) ->
-                                FilterChip(
-                                    selected = autoHours == value,
-                                    onClick = {
-                                        autoHours = value
-                                        WeatherAuto.setHours(ctx, value)
-                                    },
-                                    label = { Text(label, maxLines = 1) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         // وضعیت گرفتن موقعیت و دلیل خطا
         if (gpsBusy || gpsMessage != null) {
             item {
@@ -295,10 +263,10 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                             items(state.info.hours) { h ->
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(h.time, style = MaterialTheme.typography.bodySmall)
+                                    Text(langDigits(h.time, lang), style = MaterialTheme.typography.bodySmall)
                                     WeatherGlyph(code = h.code, size = 28.dp)
                                     Text(
-                                        tempText(h.temp, unitF),
+                                        langDigits(tempText(h.temp, unitF), lang),
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -333,10 +301,12 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
 private fun ForecastRow(day: DayForecast, regionType: CalendarType, lang: String, unitF: Boolean) {
     // تاریخ پیش‌بینی روی UTC حساب می‌شود تا روز جابه‌جا نشود
     val utcZone = android.icu.util.TimeZone.getTimeZone("UTC")
-    val dateText = formatWith(day.dateMillis, "EEEE d MMM", regionType.locale, utcZone)
-    val rangeText = "▼ " + tempText(day.min, unitF) + "  ▲ " + tempText(day.max, unitF)
+    val dateText = langDigits(formatWith(day.dateMillis, "EEEE d MMM", regionType.locale, utcZone), lang)
+    val rangeText = langDigits(
+        "▼ " + tempText(day.min, unitF) + "  ▲ " + tempText(day.max, unitF),
+        lang
+    )
     val word = conditionWord(day.code, lang)
-
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -355,66 +325,6 @@ private fun ForecastRow(day: DayForecast, regionType: CalendarType, lang: String
     }
 }
 
-// پنجره اول اجرا: GPS یا ورود دستی
-@Composable
-fun LocationSetupDialog(onDone: () -> Unit) {
-    var showManual by remember { mutableStateOf(false) }
-    var reasonText by remember { mutableStateOf<String?>(null) }
-
-    val tMyLocation = tr("موقعیت من", "My location", "موقعي")
-    val tOff = tr(
-        "GPS یا موقعیت گوشی خاموش است.",
-        "GPS or location services are off.",
-        "خدمات الموقع متوقفة."
-    )
-    val tTitle = tr("موقعیت برای آب‌وهوا", "Location for weather", "الموقع للطقس")
-    val tBody = tr(
-        "برای نمایش دما و وضعیت هوا، موقعیت شما لازم است. می‌توانید اجازه GPS بدهید یا نام شهر را دستی وارد کنید.",
-        "Your location is needed to show the temperature. Allow GPS or type your city name.",
-        "موقعك مطلوب لعرض درجة الحرارة. يمكنك السماح بـ GPS أو كتابة اسم المدينة."
-    )
-    val tManual = tr("ورود دستی نام شهر", "Enter city manually", "إدخال المدينة يدوياً")
-    val tAllowGps = tr("اجازه GPS", "Allow GPS", "السماح بـ GPS")
-    val tLater = tr("بعداً", "Later", "لاحقاً")
-
-    val gps = rememberGpsAction(
-        label = tMyLocation,
-        onDone = onDone,
-        onDenied = { showManual = true },
-        onReason = { r ->
-            reasonText = if (r == GpsFail.SERVICES_OFF) tOff else null
-        }
-    )
-
-    if (showManual) {
-        ManualCityDialog(onDismiss = onDone, onSaved = onDone)
-    } else {
-        AlertDialog(
-            onDismissRequest = onDone,
-            title = { Text(tTitle) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(tBody)
-                    reasonText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    TextButton(onClick = { showManual = true }) {
-                        Text(tManual)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = gps) {
-                    Text(tAllowGps)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDone) {
-                    Text(tLater)
-                }
-            }
-        )
-    }
-}
-
 // جست‌وجوی شهر در سراسر جهان: با تایپ، لیست زیر کادر ظاهر می‌شود و با زدن هر شهر ذخیره می‌شود
 @Composable
 fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
@@ -424,7 +334,6 @@ fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     var results by remember { mutableStateOf<List<CityResult>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var searched by remember { mutableStateOf(false) }
-
     val tTitle = tr("نام شهر را بنویسید", "Type a city name", "اكتب اسم المدينة")
     val tLabel = tr("نام شهر", "City name", "اسم المدينة")
     val tSearching = tr("در حال جست‌وجو...", "Searching...", "جارٍ البحث...")
