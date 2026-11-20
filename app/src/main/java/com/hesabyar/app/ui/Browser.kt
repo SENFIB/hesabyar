@@ -159,6 +159,7 @@ private object BrowserSession {
     private var nextId = 2L
     val tabs = mutableStateListOf(BrowserTab(1L, ""))
     var activeId by mutableLongStateOf(1L)
+
     // تب‌های بسته‌شده (فقط تب‌های عادی) برای بازگشایی دوباره
     val closed = mutableStateListOf<BrowserLink>()
 
@@ -429,7 +430,6 @@ private fun StartPage(
     val tOpenLink = tr("باز کردن", "Open", "فتح")
     val tRemove = tr("حذف", "Remove", "حذف")
     val tWiki = tr("ویکی‌پدیا", "Wikipedia", "ويكيبيديا")
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -480,8 +480,22 @@ private fun StartPage(
     }
 }
 
+// یک ردیف در منوی پایین صفحه
+@Composable
+private fun SheetItem(text: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 14.dp)
+    )
+}
+
 // ---------- صفحه اصلی مرورگر ----------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen() {
     val ctx = LocalContext.current
@@ -554,10 +568,8 @@ fun BrowserScreen() {
     var showMenu by remember { mutableStateOf(false) }
     var adBlockOn by remember { mutableStateOf(BrowserStore.adBlock(ctx)) }
     var dataTick by remember { mutableIntStateOf(0) }
-
     val bookmarks = remember(dataTick) { BrowserStore.bookmarks(ctx) }
     val history = remember(dataTick) { BrowserStore.history(ctx) }
-
     val adLabel = tAdBlock + ": " + (if (adBlockOn) tOn else tOff)
 
     LaunchedEffect(active.id, active.url) {
@@ -738,7 +750,7 @@ fun BrowserScreen() {
             }
         }
 
-        // نوار نشانی و منو
+        // نوار نشانی و دکمه منو
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -752,82 +764,8 @@ fun BrowserScreen() {
                 keyboardActions = KeyboardActions(onGo = { go(addressText) }),
                 modifier = Modifier.weight(1f)
             )
-            Box {
-                IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = tMenu)
-                }
-                DropdownMenu(
-                    expanded = showMenu,
-                    onDismissRequest = { showMenu = false },
-                    modifier = Modifier
-                        .heightIn(max = 480.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    DropdownMenuItem(
-                        text = { Text(if (isBookmarked) tBookmarkRemove else tBookmarkAdd) },
-                        onClick = { showMenu = false; toggleBookmark() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tNewTabMenu) },
-                        onClick = { showMenu = false; BrowserSession.openTab("") }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tNewPrivateTab) },
-                        onClick = { showMenu = false; BrowserSession.openTab("", true) }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tReopen) },
-                        onClick = { showMenu = false; reopenClosed() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tHistoryMenu) },
-                        onClick = { showMenu = false; showHistory = true }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tFindMenu) },
-                        onClick = { showMenu = false; showFind = true }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tZoomIn) },
-                        onClick = { showMenu = false; active.webView?.zoomIn() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tZoomOut) },
-                        onClick = { showMenu = false; active.webView?.zoomOut() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(if (active.desktop) tDesktopOff else tDesktopOn) },
-                        onClick = { showMenu = false; toggleDesktop() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(adLabel) },
-                        onClick = {
-                            showMenu = false
-                            adBlockOn = !adBlockOn
-                            BrowserStore.setAdBlock(ctx, adBlockOn)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tShare) },
-                        onClick = { showMenu = false; shareCurrent() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tCopy) },
-                        onClick = { showMenu = false; copyCurrent() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tOutside) },
-                        onClick = { showMenu = false; openOutside() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tGoogle) },
-                        onClick = { showMenu = false; openGoogle() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(tClearData) },
-                        onClick = { showMenu = false; clearAllData() }
-                    )
-                }
+            IconButton(onClick = { showMenu = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = tMenu)
             }
         }
 
@@ -905,9 +843,10 @@ fun BrowserScreen() {
         }
 
         // محتوا: صفحه شروع یا صفحه وب
-        Box(modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
         ) {
             if (active.url.isEmpty()) {
                 StartPage(
@@ -918,6 +857,83 @@ fun BrowserScreen() {
             } else {
                 key(active.id) {
                     WebPage(tab = active, texts = webTexts)
+                }
+            }
+        }
+    }
+
+    // منوی سه‌نقطه: پایین صفحه، با اسکرول
+    if (showMenu) {
+        ModalBottomSheet(
+            onDismissRequest = { showMenu = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 24.dp)
+            ) {
+                SheetItem(if (isBookmarked) tBookmarkRemove else tBookmarkAdd) {
+                    showMenu = false
+                    toggleBookmark()
+                }
+                SheetItem(tNewTabMenu) {
+                    showMenu = false
+                    BrowserSession.openTab("")
+                }
+                SheetItem(tNewPrivateTab) {
+                    showMenu = false
+                    BrowserSession.openTab("", true)
+                }
+                SheetItem(tReopen) {
+                    showMenu = false
+                    reopenClosed()
+                }
+                SheetItem(tHistoryMenu) {
+                    showMenu = false
+                    showHistory = true
+                }
+                SheetItem(tFindMenu) {
+                    showMenu = false
+                    showFind = true
+                }
+                SheetItem(tZoomIn) {
+                    showMenu = false
+                    active.webView?.zoomIn()
+                }
+                SheetItem(tZoomOut) {
+                    showMenu = false
+                    active.webView?.zoomOut()
+                }
+                SheetItem(if (active.desktop) tDesktopOff else tDesktopOn) {
+                    showMenu = false
+                    toggleDesktop()
+                }
+                SheetItem(adLabel) {
+                    showMenu = false
+                    adBlockOn = !adBlockOn
+                    BrowserStore.setAdBlock(ctx, adBlockOn)
+                }
+                SheetItem(tShare) {
+                    showMenu = false
+                    shareCurrent()
+                }
+                SheetItem(tCopy) {
+                    showMenu = false
+                    copyCurrent()
+                }
+                SheetItem(tOutside) {
+                    showMenu = false
+                    openOutside()
+                }
+                SheetItem(tGoogle) {
+                    showMenu = false
+                    openGoogle()
+                }
+                SheetItem(tClearData) {
+                    showMenu = false
+                    clearAllData()
                 }
             }
         }
