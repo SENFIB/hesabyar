@@ -50,7 +50,6 @@ import kotlin.coroutines.resume
 import kotlin.math.roundToInt
 
 // ================= کلیدهای ذخیره =================
-
 private const val WEATHER_PREFS = "hesabyar_weather"
 private const val K_LAT = "geo_lat"
 private const val K_LON = "geo_lon"
@@ -66,11 +65,8 @@ private const val AUTO_WORK_NAME = "hesabyar_weather_auto"
 private const val STALE_MS = 30L * 60L * 1000L
 
 // ================= مدل‌ها =================
-
 data class DayForecast(val dateMillis: Long, val min: Double, val max: Double, val code: Int)
-
 data class HourForecast(val time: String, val temp: Double, val code: Int)
-
 data class WeatherInfo(
     val current: Double,
     val code: Int,
@@ -103,7 +99,6 @@ sealed class LocResult {
 }
 
 // ================= ذخیره و وضعیت آب‌وهوا =================
-
 object WeatherStore {
     var state: WeatherState by mutableStateOf(WeatherState.None)
         private set
@@ -112,13 +107,26 @@ object WeatherStore {
     var fahrenheit: Boolean by mutableStateOf(false)
         private set
 
+    // با هر تغییر موقعیت این عدد زیاد می‌شود؛ صفحه‌هایی که hasLocation را می‌خوانند دوباره ساخته می‌شوند
+    private var locVersion by mutableIntStateOf(0)
+
+    // وضعیت گرفتن موقعیت GPS (برای نمایش در صفحه)
+    var gpsBusy: Boolean by mutableStateOf(false)
+        private set
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(WEATHER_PREFS, Context.MODE_PRIVATE)
 
-    fun hasLocation(ctx: Context): Boolean = prefs(ctx).getString(K_LAT, null) != null
+    fun hasLocation(ctx: Context): Boolean {
+        val version = locVersion // خواندن این مقدار باعث بازسازی صفحه بعد از تغییر موقعیت می‌شود
+        return version >= 0 && prefs(ctx).getString(K_LAT, null) != null
+    }
 
-    fun savedPlace(ctx: Context): String = prefs(ctx).getString(K_PLACE, "") ?: ""
+    fun savedPlace(ctx: Context): String {
+        val version = locVersion
+        return if (version >= 0) prefs(ctx).getString(K_PLACE, "") ?: "" else ""
+    }
 
     // زمان آخرین دریافت موفق اطلاعات (میلی‌ثانیه). صفر یعنی هنوز چیزی ذخیره نشده
     fun lastUpdatedMillis(ctx: Context): Long = prefs(ctx).getLong(K_CACHE_TIME, 0L)
@@ -138,9 +146,35 @@ object WeatherStore {
             .putString(K_LON, lon.toString())
             .putString(K_PLACE, place)
             .apply()
+        locVersion++
         state = WeatherState.Loading
         refresh(ctx)
         WeatherAuto.ensure(ctx)
+    }
+
+    // گرفتن موقعیت GPS در حوزه‌ی جدا از صفحه، تا با بسته شدن پنجره یا دیالوگ هم کار تمام شود.
+    // onResult بعد از پایان کار صدا زده می‌شود: null یعنی موفق، وگرنه دلیل شکست.
+    fun locateFromGps(ctx: Context, label: String, lang: String, onResult: (GpsFail?) -> Unit) {
+        if (gpsBusy) return
+        val appCtx = ctx.applicationContext
+        gpsBusy = true
+        scope.launch {
+            val result = runCatching { LocationHelper.current(appCtx) }.getOrDefault(LocResult.NotFound)
+            val fail: GpsFail? = when (result) {
+                is LocResult.Ok -> {
+                    val name = withContext(Dispatchers.IO) {
+                        reversePlace(appCtx, result.lat, result.lon, lang, label)
+                    }
+                    saveCity(appCtx, result.lat, result.lon, name)
+                    null
+                }
+                LocResult.Denied -> GpsFail.DENIED
+                LocResult.ServicesOff -> GpsFail.SERVICES_OFF
+                LocResult.NotFound -> GpsFail.NOT_FOUND
+            }
+            gpsBusy = false
+            onResult(fail)
+        }
     }
 
     // وقتی تب آب‌وهوا باز می‌شود: اگر کش همین شهر تازه باشد همان نمایش داده می‌شود،
@@ -209,7 +243,6 @@ object WeatherStore {
 }
 
 // ================= به‌روزرسانی خودکار (WorkManager) =================
-
 // فاصله‌های ممکن (ساعت). صفر یعنی خاموش
 object WeatherAuto {
     const val DEFAULT_HOURS = 2
@@ -249,7 +282,6 @@ object WeatherAuto {
 // این کلاس توسط WorkManager اجرا می‌شود؛ فقط وقتی اینترنت وصل است و فاصله انتخابی گذشته باشد
 class WeatherRefreshWorker(appContext: Context, params: WorkerParameters) :
     CoroutineWorker(appContext, params) {
-
     override suspend fun doWork(): ListenableWorker.Result {
         withContext(Dispatchers.IO) { fetchAndCache(applicationContext) }
         return ListenableWorker.Result.success()
@@ -271,7 +303,6 @@ private fun fetchAndCache(ctx: Context) {
 }
 
 // ================= واحد دما و منطقه زمانی پیش‌بینی =================
-
 // دما را طبق واحد انتخابی به عدد صحیح تبدیل می‌کند
 fun tempValue(c: Double, fahrenheit: Boolean): Int =
     if (fahrenheit) (c * 9.0 / 5.0 + 32.0).roundToInt() else c.roundToInt()
@@ -282,7 +313,6 @@ fun tempText(c: Double, fahrenheit: Boolean): String = tempValue(c, fahrenheit).
 fun forecastZone(): TimeZone = TimeZone.getTimeZone("UTC")
 
 // ================= شبکه =================
-
 private fun coord(v: Double): String = String.format(Locale.US, "%.4f", v)
 
 private fun forecastUrl(lat: Double, lon: Double): String =
@@ -351,7 +381,6 @@ private fun parseWeather(raw: String): WeatherInfo? = try {
 }
 
 // ================= جست‌وجوی شهر: ۵ سرویس همزمان =================
-
 // سرویس ۱ و ۵: Nominatim (OpenStreetMap) با زبان برنامه و با انگلیسی
 private fun geocodeList(q: String, lang: String): List<CityResult> {
     val raw = httpGet(
@@ -464,7 +493,6 @@ suspend fun searchCities(ctx: Context, query: String, lang: String): List<CityRe
 }
 
 // ================= وضعیت هوا به زبان‌های مختلف =================
-
 private data class Cond(val icon: String, val fa: String, val ar: String, val en: String)
 
 private fun condFor(code: Int): Cond = when (code) {
@@ -495,7 +523,6 @@ fun conditionText(code: Int, lang: String): String =
 fun conditionIcon(code: Int): String = condFor(code).icon
 
 // ================= موقعیت GPS =================
-
 object LocationHelper {
     fun hasPermission(ctx: Context): Boolean =
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -554,7 +581,8 @@ object LocationHelper {
             }
         }
 
-    // ترتیب: GPS (اگر اجازه دقیق باشد)، بعد شبکه. هر کدام حداکثر ۱۲ ثانیه وقت دارد.
+    // ترتیب: اگر موقعیت خیلی تازه (کمتر از ۲ دقیقه) در گوشی باشد همان؛ وگرنه GPS، بعد شبکه.
+    // هر کدام حداکثر ۱۲ ثانیه وقت دارد.
     @SuppressLint("MissingPermission")
     suspend fun current(ctx: Context): LocResult {
         if (!hasPermission(ctx)) return LocResult.Denied
@@ -562,6 +590,11 @@ object LocationHelper {
         val fine = hasFine(ctx)
         val anyOn = providerOn(lm, LocationManager.GPS_PROVIDER) || providerOn(lm, LocationManager.NETWORK_PROVIDER)
         if (!anyOn) return LocResult.ServicesOff
+
+        val now = System.currentTimeMillis()
+        val fresh = lastKnown(lm, fine)?.takeIf { now - it.time < 2L * 60L * 1000L }
+        if (fresh != null) return LocResult.Ok(fresh.latitude, fresh.longitude)
+
         val order = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
             .filter { p -> providerOn(lm, p) && (p != LocationManager.GPS_PROVIDER || fine) }
         for (p in order) {
@@ -569,7 +602,7 @@ object LocationHelper {
             if (loc != null) return LocResult.Ok(loc.latitude, loc.longitude)
         }
         // اگر تازه نبود، آخرین موقعیت تا ۶ ساعت قبل قابل قبول است
-        val last = lastKnown(lm, fine)?.takeIf { System.currentTimeMillis() - it.time < 6L * 60L * 60L * 1000L }
+        val last = lastKnown(lm, fine)?.takeIf { now - it.time < 6L * 60L * 60L * 1000L }
         return if (last != null) LocResult.Ok(last.latitude, last.longitude) else LocResult.NotFound
     }
 }
@@ -600,6 +633,7 @@ fun placeNameFor(ctx: Context, lat: Double, lon: Double, fallback: String): Stri
 }
 
 // دکمه‌ای که اجازه موقعیت می‌گیرد و موقعیت را ذخیره می‌کند.
+// onDone: وقتی موقعیت با موفقیت ذخیره شد (دیالوگ باید بسته شود)
 // onDenied: وقتی اجازه داده نشده یا موقعیت پیدا نشد (برای باز کردن جست‌وجوی دستی)
 // onReason: دلیل دقیق شکست را می‌دهد (برای پیام به کاربر)
 // onStart: وقتی گرفتن موقعیت شروع می‌شود
@@ -613,30 +647,19 @@ fun rememberGpsAction(
 ): () -> Unit {
     val ctx = LocalContext.current
     val lang = currentLang()
-    val scope = rememberCoroutineScope()
     val doneNow by rememberUpdatedState(onDone)
     val deniedNow by rememberUpdatedState(onDenied)
     val reasonNow by rememberUpdatedState(onReason)
     val startNow by rememberUpdatedState(onStart)
 
-    fun fail(f: GpsFail) {
-        reasonNow(f)
-        if (f == GpsFail.DENIED || f == GpsFail.NOT_FOUND) deniedNow()
-    }
-
-    fun fetch() {
-        scope.launch {
-            when (val r = LocationHelper.current(ctx)) {
-                is LocResult.Ok -> {
-                    val name = withContext(Dispatchers.IO) {
-                        reversePlace(ctx, r.lat, r.lon, lang, label)
-                    }
-                    WeatherStore.saveCity(ctx, r.lat, r.lon, name)
-                    doneNow()
-                }
-                LocResult.Denied -> fail(GpsFail.DENIED)
-                LocResult.ServicesOff -> fail(GpsFail.SERVICES_OFF)
-                LocResult.NotFound -> fail(GpsFail.NOT_FOUND)
+    // گرفتن موقعیت در حوزه‌ی برنامه انجام می‌شود، نه وابسته به این صفحه
+    fun locate() {
+        WeatherStore.locateFromGps(ctx, label, lang) { fail ->
+            if (fail == null) {
+                doneNow()
+            } else {
+                reasonNow(fail)
+                if (fail == GpsFail.DENIED || fail == GpsFail.NOT_FOUND) deniedNow()
             }
         }
     }
@@ -644,13 +667,18 @@ fun rememberGpsAction(
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.values.any { it }) fetch() else fail(GpsFail.DENIED)
+        if (result.values.any { it }) {
+            locate()
+        } else {
+            reasonNow(GpsFail.DENIED)
+            deniedNow()
+        }
     }
 
     return {
         startNow()
         if (LocationHelper.hasPermission(ctx)) {
-            fetch()
+            locate()
         } else {
             // جلوگیری از قفل شدن برنامه هنگام نمایش پنجره اجازه
             MainActivity.skipAutoLock = true
