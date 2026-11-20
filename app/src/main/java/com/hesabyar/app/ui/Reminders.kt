@@ -1,6 +1,7 @@
 package com.hesabyar.app.ui
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -11,9 +12,16 @@ import android.content.pm.PackageManager
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.media.AudioAttributes
+import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -21,10 +29,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -40,9 +50,27 @@ import java.util.concurrent.TimeUnit
 
 const val REM_DB_NAME = "hesabyar_reminders.db"
 private const val REM_DAY_MS = 86_400_000L
-private const val REM_CH_1 = "rem_fullscreen"
-private const val REM_CH_2 = "rem_onscreen"
-private const val REM_CH_3 = "rem_center"
+private const val TEST_NOTIF_BASE = 900_000
+private const val ALERT_LONG_MS = 30_000L
+
+// کلیدهای داده‌ای که بین اعلان و صفحه‌ی هشدار رد و بدل می‌شوند
+const val ALERT_EXTRA_TITLE = "alert_title"
+const val ALERT_EXTRA_TEXT = "alert_text"
+const val ALERT_EXTRA_LEVEL = "alert_level"
+const val ALERT_EXTRA_NOTIF = "alert_notif"
+const val ALERT_EXTRA_KIND = "alert_kind"
+const val ALERT_EXTRA_REF = "alert_ref"
+
+// کانال‌های نسخه‌ی جدید (تنظیمات کانال بعد از ساخت قفل می‌شود، پس نام جدید)
+private const val CH_L1 = "alert_l1_v2"
+private const val CH_L2 = "alert_l2_v2"
+private const val CH_L3 = "alert_l3_v2"
+private val OLD_CHANNELS = listOf("rem_fullscreen", "rem_onscreen", "rem_center")
+
+// شناسه‌ی اعلان هر یادآور و هر چک؛ جلوگیری از تداخل
+fun reminderNotifId(id: Long): Int = (100_000L + id).toInt()
+fun chequeNotifId(id: Long): Int = (200_000L + id).toInt()
+fun chequeAlertName(id: Long): String = "hesabyar_chq_" + id
 
 /** انتخاب متن بر اساس زبان برنامه */
 internal fun remPick(lang: String, fa: String, en: String, ar: String): String =
@@ -129,22 +157,59 @@ object RemStore {
     }
 }
 
-/** نمایش اعلان در سه سطح */
+/** نمایش اعلان در سه سطح؛ صدا و رفتار هر سطح اینجا تعیین می‌شود */
 object RemNotify {
+
+    private fun soundOf(type: Int): Uri? =
+        RingtoneManager.getDefaultUri(type) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+    private fun soundTypeFor(level: Int): Int = when (level) {
+        1 -> RingtoneManager.TYPE_ALARM
+        2 -> RingtoneManager.TYPE_RINGTONE
+        else -> RingtoneManager.TYPE_NOTIFICATION
+    }
+
+    private fun attrs(usage: Int): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(usage)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
     fun ensureChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        OLD_CHANNELS.forEach { nm.deleteNotificationChannel(it) }
+
+        // سطح ۱: صفحه کامل و زنگ بلند (صدای آلارم که در نوتیف تکرار می‌شود)
         nm.createNotificationChannel(
-            NotificationChannel(REM_CH_1, "یادآور تمام‌صفحه", NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "اعلان فوری با صدا و نمایش تمام‌صفحه" }
+            NotificationChannel(CH_L1, "یادآور سطح ۱ (صفحه کامل)", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "صفحه کامل با زنگ بلند تا بسته شدن"
+                setSound(soundOf(RingtoneManager.TYPE_ALARM), attrs(AudioAttributes.USAGE_ALARM))
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 800L, 500L, 800L, 500L, 800L)
+            }
         )
+
+        // سطح ۲: بنر بالای صفحه و صدای متوسط (یک بار)
         nm.createNotificationChannel(
-            NotificationChannel(REM_CH_2, "یادآور روی صفحه", NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "بنر بالای صفحه با صدا" }
+            NotificationChannel(CH_L2, "یادآور سطح ۲ (بنر بالا)", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "بنر بالای صفحه با صدای متوسط"
+                setSound(
+                    soundOf(RingtoneManager.TYPE_RINGTONE),
+                    attrs(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                )
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0L, 300L, 200L, 300L)
+            }
         )
+
+        // سطح ۳: فقط مرکز اعلان و صدای کوتاه
         nm.createNotificationChannel(
-            NotificationChannel(REM_CH_3, "یادآور آرام", NotificationManager.IMPORTANCE_DEFAULT)
-                .apply { description = "فقط در مرکز اعلان با صدای ملایم" }
+            NotificationChannel(CH_L3, "یادآور سطح ۳ (مرکز اعلان)", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "فقط در مرکز اعلان با صدای کوتاه"
+                setSound(soundOf(RingtoneManager.TYPE_NOTIFICATION), attrs(AudioAttributes.USAGE_NOTIFICATION))
+                enableVibration(false)
+            }
         )
     }
 
@@ -156,70 +221,294 @@ object RemNotify {
             PackageManager.PERMISSION_GRANTED
     }
 
+    /** Intent صفحه‌ی هشدار سطح ۱ (با داده‌های لازم) */
+    fun alertIntent(
+        ctx: Context,
+        title: String,
+        text: String,
+        level: Int,
+        notifId: Int,
+        kind: String,
+        ref: Long
+    ): Intent =
+        Intent(ctx, ReminderAlertActivity::class.java)
+            .putExtra(ALERT_EXTRA_TITLE, title)
+            .putExtra(ALERT_EXTRA_TEXT, text)
+            .putExtra(ALERT_EXTRA_LEVEL, level)
+            .putExtra(ALERT_EXTRA_NOTIF, notifId)
+            .putExtra(ALERT_EXTRA_KIND, kind)
+            .putExtra(ALERT_EXTRA_REF, ref)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
     @Suppress("MissingPermission")
-    fun show(ctx: Context, id: Long, title: String, text: String, level: Int) {
+    fun show(
+        ctx: Context,
+        notifId: Int,
+        title: String,
+        text: String,
+        level: Int,
+        kind: String = "",
+        ref: Long = 0L
+    ) {
         if (!canNotify(ctx)) return
         ensureChannels(ctx)
-        val open = PendingIntent.getActivity(
+        val lv = if (level in 1..3) level else 2
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+
+        val openApp = PendingIntent.getActivity(
             ctx,
-            id.toInt(),
+            notifId,
             Intent(ctx, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            flags
         )
-        val channel = when (level) {
-            1 -> REM_CH_1
-            2 -> REM_CH_2
-            else -> REM_CH_3
+        val page = PendingIntent.getActivity(
+            ctx,
+            notifId + 7_777_777,
+            alertIntent(ctx, title, text, lv, notifId, kind, ref),
+            flags
+        )
+
+        val channel = when (lv) {
+            1 -> CH_L1
+            2 -> CH_L2
+            else -> CH_L3
         }
+
         val b = NotificationCompat.Builder(ctx, channel)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(open)
             .setAutoCancel(true)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
-            .setPriority(if (level == 3) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
-        if (level == 1) b.setFullScreenIntent(open, true)
-        NotificationManagerCompat.from(ctx).notify(id.toInt(), b.build())
+            .setCategory(if (lv == 1) NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(if (lv == 3) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(if (lv == 1) page else openApp)
+
+        if (lv == 1) {
+            // صفحه کامل وقتی گوشی قفل است یا خاموش است باز می‌شود
+            b.setFullScreenIntent(page, true)
+            // بعد از مدت مشخص، اعلان (و زنگ تکرارشونده‌اش) خودکار بسته می‌شود
+            b.setTimeoutAfter(ALERT_LONG_MS)
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            soundOf(soundTypeFor(lv))?.let { b.setSound(it) }
+        }
+
+        val n = b.build()
+        // سطح ۱: صدا تکرار می‌شود تا وقتی اعلان بسته نشده
+        if (lv == 1) n.flags = n.flags or Notification.FLAG_INSISTENT
+        NotificationManagerCompat.from(ctx).notify(notifId, n)
+    }
+}
+
+/** صفحه‌ی تمام‌صفحه‌ی هشدار سطح ۱ (روی قفل هم نمایش داده می‌شود) */
+class ReminderAlertActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
+        val title = intent.getStringExtra(ALERT_EXTRA_TITLE) ?: ""
+        val text = intent.getStringExtra(ALERT_EXTRA_TEXT) ?: ""
+        val level = intent.getIntExtra(ALERT_EXTRA_LEVEL, 1)
+        val notifId = intent.getIntExtra(ALERT_EXTRA_NOTIF, 0)
+        val kind = intent.getStringExtra(ALERT_EXTRA_KIND) ?: ""
+        val ref = intent.getLongExtra(ALERT_EXTRA_REF, 0L)
+
+        setContent {
+            MaterialTheme {
+                AlertPage(
+                    title = title,
+                    text = text,
+                    level = level,
+                    canMarkDone = kind.isNotEmpty() && ref > 0L,
+                    onDone = {
+                        if (kind == "rem" && ref > 0L) {
+                            RemStore.setDone(this@ReminderAlertActivity, ref, true)
+                            RemScheduler.cancel(this@ReminderAlertActivity, ref)
+                        }
+                        if (kind == "chq" && ref > 0L) {
+                            ChequeStore.setDone(this@ReminderAlertActivity, ref, true)
+                            AlertWork.cancel(this@ReminderAlertActivity, chequeAlertName(ref))
+                        }
+                        NotificationManagerCompat.from(this@ReminderAlertActivity).cancel(notifId)
+                        finish()
+                    },
+                    onDismiss = {
+                        NotificationManagerCompat.from(this@ReminderAlertActivity).cancel(notifId)
+                        finish()
+                    },
+                    onOpenApp = {
+                        NotificationManagerCompat.from(this@ReminderAlertActivity).cancel(notifId)
+                        startActivity(
+                            Intent(this@ReminderAlertActivity, MainActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        )
+                        finish()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlertPage(
+    title: String,
+    text: String,
+    level: Int,
+    canMarkDone: Boolean,
+    onDone: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpenApp: () -> Unit
+) {
+    val tHead = tr("هشدار مهم", "Important alert", "تنبيه مهم")
+    val tDone = tr("انجام شد", "Done", "تم")
+    val tDismiss = tr("بستن و قطع صدا", "Dismiss and stop sound", "إغلاق وإيقاف الصوت")
+    val tOpen = tr("باز کردن برنامه", "Open the app", "فتح التطبيق")
+    val container = when (level) {
+        1 -> MaterialTheme.colorScheme.errorContainer
+        2 -> MaterialTheme.colorScheme.tertiaryContainer
+        else -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    Surface(modifier = Modifier.fillMaxSize(), color = container) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(tHead, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(text, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(32.dp))
+            if (canMarkDone) {
+                Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text(tDone) }
+                Spacer(Modifier.height(8.dp))
+            }
+            OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text(tDismiss) }
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onOpenApp, modifier = Modifier.fillMaxWidth()) { Text(tOpen) }
+        }
+    }
+}
+
+/** زمان‌بندی یک‌باره با WorkManager؛ برای یادآورها و چک و سفته استفاده می‌شود */
+object AlertWork {
+    fun schedule(
+        ctx: Context,
+        name: String,
+        fireAt: Long,
+        title: String,
+        text: String,
+        level: Int,
+        notifId: Int,
+        kind: String,
+        ref: Long
+    ) {
+        val wm = WorkManager.getInstance(ctx)
+        wm.cancelUniqueWork(name)
+        val waitMs = maxOf(0L, fireAt - System.currentTimeMillis())
+        val req = OneTimeWorkRequestBuilder<ReminderWorker>()
+            .setInitialDelay(waitMs, TimeUnit.MILLISECONDS)
+            .setInputData(
+                workDataOf(
+                    "title" to title,
+                    "text" to text,
+                    "level" to level,
+                    "notif_id" to notifId,
+                    "kind" to kind,
+                    "ref" to ref
+                )
+            )
+            .build()
+        wm.enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, req)
+    }
+
+    fun cancel(ctx: Context, name: String) {
+        WorkManager.getInstance(ctx).cancelUniqueWork(name)
     }
 }
 
 /** کارگر یک‌باره: در زمان موعد اعلان را نشان می‌دهد */
 class ReminderWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
+        val appCtx = applicationContext
+        val preTitle = inputData.getString("title")
+        if (preTitle != null) {
+            RemNotify.show(
+                appCtx,
+                inputData.getInt("notif_id", 0),
+                preTitle,
+                inputData.getString("text") ?: "",
+                inputData.getInt("level", 2),
+                inputData.getString("kind") ?: "",
+                inputData.getLong("ref", 0L)
+            )
+            return Result.success()
+        }
+        // پشتیبانی از زمان‌بندی‌های قدیمی که فقط شناسه را داشتند
         val id = inputData.getLong("id", 0L)
-        val r = RemStore.get(applicationContext, id) ?: return Result.success()
+        val r = RemStore.get(appCtx, id) ?: return Result.success()
         if (r.done) return Result.success()
-        val t = CalendarType.forLanguage(r.lang)
-        val due = formatWith(r.dueMillis, "yyyy/MM/dd HH:mm", t.locale, t.timeZone)
-        val title = remPick(r.lang, "یادآور: ", "Reminder: ", "تذكير: ") + r.title
-        val text = remPick(r.lang, "موعد: ", "Due: ", "الموعد: ") + due
-        RemNotify.show(applicationContext, r.id, title, text, r.level)
+        val due = remDueText(r)
+        RemNotify.show(
+            appCtx,
+            reminderNotifId(r.id),
+            remPick(r.lang, "یادآور: ", "Reminder: ", "تذكير: ") + r.title,
+            remPick(r.lang, "موعد: ", "Due: ", "الموعد: ") + due,
+            r.level,
+            "rem",
+            r.id
+        )
         return Result.success()
     }
 }
 
-/** زمان‌بندی یک‌باره (بدون تکرار) با WorkManager */
+/** زمان‌بندی یادآورهای یادداشت */
 object RemScheduler {
     private fun name(id: Long): String = "hesabyar_rem_" + id
 
     fun schedule(ctx: Context, r: RemItem) {
-        val wm = WorkManager.getInstance(ctx)
-        wm.cancelUniqueWork(name(r.id))
-        if (r.done) return
+        if (r.done) {
+            AlertWork.cancel(ctx, name(r.id))
+            return
+        }
         val fireAt = r.dueMillis - r.leadDays * REM_DAY_MS
-        val waitMs = maxOf(0L, fireAt - System.currentTimeMillis())
-        val req = OneTimeWorkRequestBuilder<ReminderWorker>()
-            .setInitialDelay(waitMs, TimeUnit.MILLISECONDS)
-            .setInputData(workDataOf("id" to r.id))
-            .build()
-        wm.enqueueUniqueWork(name(r.id), ExistingWorkPolicy.REPLACE, req)
+        AlertWork.schedule(
+            ctx,
+            name(r.id),
+            fireAt,
+            remPick(r.lang, "یادآور: ", "Reminder: ", "تذكير: ") + r.title,
+            remPick(r.lang, "موعد: ", "Due: ", "الموعد: ") + remDueText(r),
+            r.level,
+            reminderNotifId(r.id),
+            "rem",
+            r.id
+        )
     }
 
     fun cancel(ctx: Context, id: Long) {
-        WorkManager.getInstance(ctx).cancelUniqueWork(name(id))
+        AlertWork.cancel(ctx, name(id))
     }
 }
 
@@ -309,6 +598,59 @@ private fun RemRow(r: RemItem, onToggle: () -> Unit, onDelete: () -> Unit) {
     }
 }
 
+/** کارت تست سه سطح اعلان؛ برای یادداشت‌ها و چک و سفته یکسان است */
+@Composable
+fun AlertTestCard() {
+    val ctx = LocalContext.current
+    val lang = currentLang()
+    val header = remPick(lang, "تست اعلان‌ها", "Test notifications", "اختبار الإشعارات")
+    val hint = remPick(
+        lang,
+        "سطح ۱: صفحه کامل و زنگ بلند تا بسته شدن. سطح ۲: بنر بالا و صدای متوسط. سطح ۳: فقط مرکز اعلان و صدای کوتاه.",
+        "Level 1: full screen with a long alarm. Level 2: top banner with a medium sound. Level 3: notification centre only with a short sound.",
+        "المستوى 1: ملء الشاشة مع منبه طويل. المستوى 2: شريط علوي وصوت متوسط. المستوى 3: مركز الإشعارات فقط بصوت قصير."
+    )
+    val testTitle = remPick(lang, "آزمایش یادآور", "Reminder test", "اختبار التذكير")
+    val testText = remPick(lang, "این یک اعلان آزمایشی است.", "This is a test notification.", "هذا إشعار تجريبي.")
+    val testSent = remPick(lang, "اعلان آزمایشی ارسال شد", "Test notification sent", "تم إرسال الإشعار التجريبي")
+    val blockedMsg = remPick(
+        lang,
+        "اعلان‌ها برای برنامه خاموش است. از تنظیمات گوشی روشن کنید.",
+        "Notifications are off. Turn them on in phone settings.",
+        "الإشعارات متوقفة. فعّلها من إعدادات الهاتف."
+    )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(header, fontWeight = FontWeight.Bold)
+            Text(hint, style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                listOf(1, 2, 3).forEach { lv ->
+                    OutlinedButton(
+                        onClick = {
+                            if (!RemNotify.canNotify(ctx)) {
+                                Toast.makeText(ctx, blockedMsg, Toast.LENGTH_LONG).show()
+                            } else {
+                                val nid = TEST_NOTIF_BASE + lv
+                                RemNotify.show(ctx, nid, testTitle, testText, lv)
+                                // سطح ۱ علاوه بر اعلان، صفحه‌ی کامل را هم نشان می‌دهد
+                                if (lv == 1) {
+                                    ctx.startActivity(RemNotify.alertIntent(ctx, testTitle, testText, lv, nid, "", 0L))
+                                }
+                                Toast.makeText(ctx, testSent, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(remLevelLabel(lv, lang), maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** تبدیل نیازهای قدیمی (فقط برای سازگاری) و توابع اصلی صفحه یادداشت‌ها */
 @Composable
 fun RemindersScreen(regionType: CalendarType) {
     val ctx = LocalContext.current
@@ -327,7 +669,6 @@ fun RemindersScreen(regionType: CalendarType) {
     var level by remember { mutableIntStateOf(2) }
     var error by remember { mutableStateOf("") }
     var showFinished by remember { mutableStateOf(false) }
-    var seen by remember { mutableStateOf(setOf<Long>()) }
     var canNotify by remember { mutableStateOf(RemNotify.canNotify(ctx)) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -341,41 +682,13 @@ fun RemindersScreen(regionType: CalendarType) {
         exampleText + p(" بنویسید.", ".", ".")
     val errPast = p("این زمان گذشته است؛ زمان آینده وارد کنید.", "This time has passed; enter a future time.", "هذا الوقت قد مضى؛ أدخل وقتًا مستقبليًا.")
     val savedMsg = p("یادداشت ثبت شد ✓", "Saved ✓", "تم الحفظ ✓")
-    val testTitle = p("آزمایش یادآور", "Reminder test", "اختبار التذكير")
-    val testText = p("این یک اعلان آزمایشی است.", "This is a test notification.", "هذا إشعار تجريبي.")
-    val testSent = p("اعلان آزمایشی ارسال شد", "Test notification sent", "تم إرسال الإشعار التجريبي")
-    val blockedMsg = p("اعلان‌ها برای برنامه خاموش است. از تنظیمات گوشی روشن کنید.", "Notifications are off. Turn them on in phone settings.", "الإشعارات متوقفة. فعّلها من إعدادات الهاتف.")
+
     val levelOptions = listOf(1, 2, 3).map { it to remLevelLabel(it, lang) }
     val leadOptions = listOf(0, 1, 3, 7, 14, 30).map { it to remLeadLabel(it, lang) }
-
     val nowMs = System.currentTimeMillis()
     val active = list.filter { !it.done }
     val finished = list.filter { it.done }
-    val dueNow = active.filter { it.dueMillis - it.leadDays * REM_DAY_MS <= nowMs }
-    val popup = dueNow.firstOrNull { it.level == 1 && it.id !in seen }
-    val banners = dueNow.filter { it.level == 2 }
-
-    if (popup != null) {
-        val doneTxt = remPick(popup.lang, "انجام شد", "Done", "تم")
-        val laterTxt = remPick(popup.lang, "بعداً", "Later", "لاحقاً")
-        val dueLine = remPick(popup.lang, "موعد: ", "Due: ", "الموعد: ") + remDueText(popup)
-        AlertDialog(
-            onDismissRequest = { seen = seen + popup.id },
-            title = { Text(popup.title) },
-            text = { Text(dueLine) },
-            confirmButton = {
-                TextButton(onClick = {
-                    RemStore.setDone(ctx, popup.id, true)
-                    RemScheduler.cancel(ctx, popup.id)
-                    seen = seen + popup.id
-                    reload()
-                }) { Text(doneTxt) }
-            },
-            dismissButton = {
-                TextButton(onClick = { seen = seen + popup.id }) { Text(laterTxt) }
-            }
-        )
-    }
+    val banners = active.filter { it.level == 2 && it.dueMillis - it.leadDays * REM_DAY_MS <= nowMs }
 
     Column(
         modifier = Modifier
@@ -398,7 +711,7 @@ fun RemindersScreen(regionType: CalendarType) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         p(
-                            "اعلان‌ها برای این برنامه خاموش است. بدون اجازه، یادآورها در مرکز اعلان دیده نمی‌شوند.",
+                            "اعلان‌ها برای این برنامه خاموش است. بدون اجازه، یادآورها دیده نمی‌شوند.",
                             "Notifications are off. Without permission, reminders will not appear.",
                             "الإشعارات متوقفة. بدون الإذن لن تظهر التذكيرات."
                         )
@@ -450,11 +763,9 @@ fun RemindersScreen(regionType: CalendarType) {
                 RemChipGrid(leadOptions, lead) { lead = it }
                 Text(p("نوع اعلان", "Notification type", "نوع الإشعار"), style = MaterialTheme.typography.bodySmall)
                 RemChipGrid(levelOptions, level) { level = it }
-
                 if (error.isNotEmpty()) {
                     Text(error, color = MaterialTheme.colorScheme.error)
                 }
-
                 Button(
                     onClick = {
                         if (title.isBlank()) {
@@ -487,31 +798,10 @@ fun RemindersScreen(regionType: CalendarType) {
             }
         }
 
-        // دکمه‌های تست سه سطح اعلان
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(p("تست اعلان‌ها", "Test notifications", "اختبار الإشعارات"), fontWeight = FontWeight.Bold)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                    listOf(1, 2, 3).forEach { lv ->
-                        OutlinedButton(
-                            onClick = {
-                                if (!RemNotify.canNotify(ctx)) {
-                                    Toast.makeText(ctx, blockedMsg, Toast.LENGTH_LONG).show()
-                                } else {
-                                    RemNotify.show(ctx, 900000L + lv, testTitle, testText, lv)
-                                    Toast.makeText(ctx, testSent, Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(remLevelLabel(lv, lang), maxLines = 1)
-                        }
-                    }
-                }
-            }
-        }
+        // تست سه سطح اعلان
+        AlertTestCard()
 
-        // یادآورهای روی صفحه (سطح ۲)
+        // یادآورهای روی صفحه (سطح ۲) وقتی برنامه باز است
         if (banners.isNotEmpty()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -535,9 +825,8 @@ fun RemindersScreen(regionType: CalendarType) {
             RemRow(
                 r = r,
                 onToggle = {
-                    val updated = r.copy(done = true)
                     RemStore.setDone(ctx, r.id, true)
-                    RemScheduler.schedule(ctx, updated)
+                    RemScheduler.schedule(ctx, r.copy(done = true))
                     reload()
                 },
                 onDelete = {
