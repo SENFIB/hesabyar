@@ -1,5 +1,6 @@
 package com.hesabyar.app.ui
-
+import com.hesabyar.app.MainActivity
+import androidx.compose.ui.Alignment
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
