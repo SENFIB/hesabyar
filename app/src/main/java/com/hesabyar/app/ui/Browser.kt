@@ -14,6 +14,8 @@ import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -44,14 +46,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 
 // ---------- مدل و ذخیره‌سازی نشان‌ها و تاریخچه ----------
 
@@ -84,6 +89,12 @@ object BrowserStore {
         prefs(ctx).edit().remove("history").apply()
     }
 
+    fun adBlock(ctx: Context): Boolean = prefs(ctx).getBoolean("adblock", true)
+
+    fun setAdBlock(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean("adblock", on).apply()
+    }
+
     private fun readList(raw: String?): List<BrowserLink> {
         if (raw.isNullOrBlank()) return emptyList()
         return try {
@@ -106,12 +117,32 @@ object BrowserStore {
     }
 }
 
+// ---------- فهرست ساده تبلیغات (دامنه‌های رایج) ----------
+
+private val AD_HOSTS = listOf(
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "adservice.google.com",
+    "google-analytics.com",
+    "outbrain.com",
+    "taboola.com",
+    "criteo.com",
+    "adnxs.com",
+    "scorecardresearch.com",
+    "popads.net",
+    "propellerads.com"
+)
+
+private fun isAdHost(host: String): Boolean =
+    AD_HOSTS.any { host == it || host.endsWith("." + it) }
+
 // ---------- وضعیت تب‌ها ----------
 
 private const val DESKTOP_UA =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-private class BrowserTab(val id: Long, startUrl: String) {
+private class BrowserTab(val id: Long, startUrl: String, val isPrivate: Boolean = false) {
     // رشته خالی یعنی صفحه شروع
     var url by mutableStateOf(startUrl)
     var title by mutableStateOf("")
@@ -128,11 +159,13 @@ private object BrowserSession {
     private var nextId = 2L
     val tabs = mutableStateListOf(BrowserTab(1L, ""))
     var activeId by mutableLongStateOf(1L)
+    // تب‌های بسته‌شده (فقط تب‌های عادی) برای بازگشایی دوباره
+    val closed = mutableStateListOf<BrowserLink>()
 
     fun active(): BrowserTab = tabs.firstOrNull { it.id == activeId } ?: tabs[0]
 
-    fun openTab(url: String) {
-        val t = BrowserTab(nextId++, url)
+    fun openTab(url: String, priv: Boolean = false) {
+        val t = BrowserTab(nextId++, url, priv)
         tabs.add(t)
         activeId = t.id
     }
@@ -141,10 +174,25 @@ private object BrowserSession {
         activeId = id
     }
 
+    fun reopenLast() {
+        if (closed.isEmpty()) return
+        val last = closed.removeAt(0)
+        openTab(last.url)
+    }
+
     fun close(id: Long) {
         val idx = tabs.indexOfFirst { it.id == id }
         if (idx < 0) return
-        tabs[idx].webView?.stopLoading()
+        val tab = tabs[idx]
+        tab.webView?.stopLoading()
+        if (!tab.isPrivate && tab.url.isNotEmpty()) {
+            closed.add(0, BrowserLink(tab.title.ifBlank { tab.url }, tab.url, System.currentTimeMillis()))
+            while (closed.size > 10) closed.removeAt(closed.lastIndex)
+        }
+        if (tab.isPrivate) {
+            val otherPrivate = tabs.any { it.isPrivate && it.id != id }
+            wipeTab(tab, lastPrivate = !otherPrivate)
+        }
         tabs.removeAt(idx)
         if (tabs.isEmpty()) {
             val fresh = BrowserTab(nextId++, "")
@@ -154,6 +202,24 @@ private object BrowserSession {
             activeId = tabs[maxOf(0, idx - 1)].id
         }
     }
+}
+
+// پاک کردن داده‌های یک تب خصوصی هنگام بستن
+private fun wipeTab(tab: BrowserTab, lastPrivate: Boolean) {
+    tab.webView?.let { w ->
+        w.clearHistory()
+        w.clearCache(true)
+    }
+    // کوکی‌ها و فضای ذخیره سایت‌ها فقط وقتی پاک می‌شوند که تب خصوصی دیگری باز نباشد
+    if (lastPrivate) clearWebData()
+}
+
+// کوکی‌ها و داده‌های سایت‌ها (برای همه تب‌ها؛ WebView کوکی جدا برای هر تب ندارد)
+private fun clearWebData() {
+    val cm = CookieManager.getInstance()
+    cm.removeAllCookies(null)
+    cm.flush()
+    WebStorage.getInstance().deleteAllData()
 }
 
 private class WebTexts(
@@ -232,6 +298,14 @@ private fun createWebView(ctx: Context, tab: BrowserTab, texts: WebTexts): WebVi
     cookies.setAcceptThirdPartyCookies(web, true)
 
     web.webViewClient = object : WebViewClient() {
+        // مسدودکردن درخواست‌های تبلیغاتی (اگر در تنظیمات روشن باشد)
+        override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+            if (!BrowserStore.adBlock(appCtx)) return null
+            val host = request?.url?.host?.lowercase() ?: return null
+            if (!isAdHost(host)) return null
+            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val uri = request?.url ?: return false
             val url = uri.toString()
@@ -261,7 +335,10 @@ private fun createWebView(ctx: Context, tab: BrowserTab, texts: WebTexts): WebVi
             val finalUrl = url ?: return
             if (finalUrl == "about:blank") return
             tab.url = finalUrl
-            BrowserStore.addHistory(appCtx, view?.title ?: tab.title, finalUrl)
+            // در تب خصوصی تاریخچه ذخیره نمی‌شود
+            if (!tab.isPrivate) {
+                BrowserStore.addHistory(appCtx, view?.title ?: tab.title, finalUrl)
+            }
         }
 
         override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
@@ -292,7 +369,7 @@ private fun createWebView(ctx: Context, tab: BrowserTab, texts: WebTexts): WebVi
             popup.webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(v: WebView?, request: WebResourceRequest?): Boolean {
                     val u = request?.url?.toString() ?: return true
-                    BrowserSession.openTab(u)
+                    BrowserSession.openTab(u, tab.isPrivate)
                     val target = v
                     target?.post { target.destroy() }
                     return true
@@ -321,7 +398,6 @@ private fun createWebView(ctx: Context, tab: BrowserTab, texts: WebTexts): WebVi
             Toast.makeText(appCtx, texts.downloadFailed, Toast.LENGTH_SHORT).show()
         }
     }
-
     return web
 }
 
@@ -373,7 +449,6 @@ private fun StartPage(
                 Text(tWiki, maxLines = 1)
             }
         }
-
         Text(tBookmarks, fontWeight = FontWeight.Bold)
         if (bookmarks.isEmpty()) {
             Text(tNoBookmarks)
@@ -413,8 +488,21 @@ fun BrowserScreen() {
     val tabs = BrowserSession.tabs
     val active = BrowserSession.active()
 
+    // در حالت راست‌به‌چپ آیکون‌ها برعکس می‌شوند تا «برگشت» به سمت صفحه قبل اشاره کند
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val backIcon = if (rtl) Icons.Filled.ArrowForward else Icons.Filled.ArrowBack
+    val forwardIcon = if (rtl) Icons.Filled.ArrowBack else Icons.Filled.ArrowForward
+
     val tAddress = tr("نشانی یا جست‌وجو", "Address or search", "العنوان أو البحث")
     val tNewTab = tr("تب جدید", "New tab", "تبويب جديد")
+    val tPrivateTab = tr("تب خصوصی", "Private tab", "تبويب خاص")
+    val tNewPrivateTab = tr("تب خصوصی جدید", "New private tab", "تبويب خاص جديد")
+    val tPrivateNote = tr(
+        "تب خصوصی: تاریخچه ذخیره نمی‌شود، نشان ذخیره نمی‌شود و با بستن تب، کوکی‌ها و داده‌های سایت‌ها پاک می‌شوند (ممکن است از سایت‌ها خارج شوید).",
+        "Private tab: history and bookmarks are not saved. Closing it clears cookies and site data (you may be signed out of sites).",
+        "تبويب خاص: لا يُحفظ السجل ولا الإشارات. عند إغلاقه تُمسح الكوكيز وبيانات المواقع (وقد تخرج من المواقع)."
+    )
+    val tNoBookmarkPrivate = tr("در تب خصوصی نشان ذخیره نمی‌شود", "Bookmarks are not saved in private tabs", "لا يتم حفظ الإشارات في التبويبات الخاصة")
     val tMenu = tr("منو", "Menu", "القائمة")
     val tBack = tr("برگشت", "Back", "رجوع")
     val tForward = tr("جلوتر", "Forward", "تقدم")
@@ -440,6 +528,15 @@ fun BrowserScreen() {
     val tNewTabMenu = tr("تب جدید", "New tab", "تبويب جديد")
     val tFindMenu = tr("یافتن در صفحه", "Find in page", "بحث في الصفحة")
     val tHistoryMenu = tr("تاریخچه", "History", "السجل")
+    val tReopen = tr("بازگشایی آخرین تب بسته‌شده", "Reopen closed tab", "إعادة فتح التبويب المغلق")
+    val tNoClosed = tr("تب بسته‌شده‌ای نیست", "No recently closed tabs", "لا توجد تبويبات مغلقة مؤخراً")
+    val tZoomIn = tr("بزرگ‌نمایی", "Zoom in", "تكبير")
+    val tZoomOut = tr("کوچک‌نمایی", "Zoom out", "تصغير")
+    val tAdBlock = tr("مسدودکننده تبلیغ", "Ad blocker", "حاجب الإعلانات")
+    val tOn = tr("روشن", "On", "مفعّل")
+    val tOff = tr("خاموش", "Off", "معطّل")
+    val tClearData = tr("پاک کردن تاریخچه، کوکی و کش", "Clear history, cookies and cache", "مسح السجل والكوكيز والذاكرة المؤقتة")
+    val tCleared = tr("داده‌های مرور پاک شد", "Browsing data cleared", "تم مسح بيانات التصفح")
     val tGoogleNote = tr(
         "ورود گوگل در Chrome باز شد؛ گوگل ورود از داخل برنامه‌های مرورگر را نمی‌پذیرد.",
         "Google sign-in opened in Chrome. Google does not allow sign-in inside in-app browsers.",
@@ -448,7 +545,6 @@ fun BrowserScreen() {
     val tDownloadStarted = tr("دانلود شروع شد (پوشه Downloads)", "Download started", "بدأ التنزيل")
     val tDownloadFailed = tr("دانلود انجام نشد", "Download failed", "فشل التنزيل")
     val tNoBrowser = tr("برنامه‌ای برای باز کردن این نشانی پیدا نشد", "No app found to open this link", "لا يوجد تطبيق لفتح هذا الرابط")
-
     val webTexts = WebTexts(tGoogleNote, tDownloadStarted, tDownloadFailed, tNoBrowser)
 
     var addressText by remember { mutableStateOf("") }
@@ -456,10 +552,13 @@ fun BrowserScreen() {
     var findText by remember { mutableStateOf("") }
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var adBlockOn by remember { mutableStateOf(BrowserStore.adBlock(ctx)) }
     var dataTick by remember { mutableIntStateOf(0) }
 
     val bookmarks = remember(dataTick) { BrowserStore.bookmarks(ctx) }
     val history = remember(dataTick) { BrowserStore.history(ctx) }
+
+    val adLabel = tAdBlock + ": " + (if (adBlockOn) tOn else tOff)
 
     LaunchedEffect(active.id, active.url) {
         addressText = active.url
@@ -491,6 +590,10 @@ fun BrowserScreen() {
     }
 
     fun toggleBookmark() {
+        if (active.isPrivate) {
+            Toast.makeText(ctx, tNoBookmarkPrivate, Toast.LENGTH_SHORT).show()
+            return
+        }
         val list = BrowserStore.bookmarks(ctx).toMutableList()
         val existing = list.indexOfFirst { it.url == active.url }
         if (existing >= 0) {
@@ -548,6 +651,22 @@ fun BrowserScreen() {
         }
     }
 
+    fun reopenClosed() {
+        if (BrowserSession.closed.isEmpty()) {
+            Toast.makeText(ctx, tNoClosed, Toast.LENGTH_SHORT).show()
+        } else {
+            BrowserSession.reopenLast()
+        }
+    }
+
+    fun clearAllData() {
+        tabs.forEach { t -> t.webView?.clearCache(true) }
+        clearWebData()
+        BrowserStore.clearHistory(ctx)
+        dataTick++
+        Toast.makeText(ctx, tCleared, Toast.LENGTH_SHORT).show()
+    }
+
     // دکمه برگشت گوشی: اول برگشت در صفحه، بعد صفحه شروع، بعد بستن تب
     BackHandler(enabled = active.canBack || active.url.isNotEmpty() || tabs.size > 1) {
         goBack()
@@ -570,22 +689,25 @@ fun BrowserScreen() {
                 val isActive = t.id == active.id
                 val label = when {
                     t.title.isNotBlank() -> t.title
-                    t.url.isEmpty() -> tNewTab
+                    t.url.isEmpty() -> if (t.isPrivate) tPrivateTab else tNewTab
                     else -> t.url
                 }
-                val textColor = if (isActive) {
-                    MaterialTheme.colorScheme.onPrimary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
+                val bg = when {
+                    t.isPrivate && isActive -> Color(0xFF455A64)
+                    t.isPrivate -> Color(0xFF263238)
+                    isActive -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                }
+                val textColor = when {
+                    t.isPrivate -> Color.White
+                    isActive -> MaterialTheme.colorScheme.onPrimary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
                 }
                 Row(
                     modifier = Modifier
                         .padding(end = 6.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (isActive) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        )
+                        .background(bg)
                         .clickable { BrowserSession.select(t.id) }
                         .padding(start = 10.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -634,7 +756,13 @@ fun BrowserScreen() {
                 IconButton(onClick = { showMenu = true }) {
                     Icon(Icons.Filled.MoreVert, contentDescription = tMenu)
                 }
-                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false },
+                    modifier = Modifier
+                        .heightIn(max = 480.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     DropdownMenuItem(
                         text = { Text(if (isBookmarked) tBookmarkRemove else tBookmarkAdd) },
                         onClick = { showMenu = false; toggleBookmark() }
@@ -642,6 +770,14 @@ fun BrowserScreen() {
                     DropdownMenuItem(
                         text = { Text(tNewTabMenu) },
                         onClick = { showMenu = false; BrowserSession.openTab("") }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(tNewPrivateTab) },
+                        onClick = { showMenu = false; BrowserSession.openTab("", true) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(tReopen) },
+                        onClick = { showMenu = false; reopenClosed() }
                     )
                     DropdownMenuItem(
                         text = { Text(tHistoryMenu) },
@@ -652,8 +788,24 @@ fun BrowserScreen() {
                         onClick = { showMenu = false; showFind = true }
                     )
                     DropdownMenuItem(
+                        text = { Text(tZoomIn) },
+                        onClick = { showMenu = false; active.webView?.zoomIn() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(tZoomOut) },
+                        onClick = { showMenu = false; active.webView?.zoomOut() }
+                    )
+                    DropdownMenuItem(
                         text = { Text(if (active.desktop) tDesktopOff else tDesktopOn) },
                         onClick = { showMenu = false; toggleDesktop() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(adLabel) },
+                        onClick = {
+                            showMenu = false
+                            adBlockOn = !adBlockOn
+                            BrowserStore.setAdBlock(ctx, adBlockOn)
+                        }
                     )
                     DropdownMenuItem(
                         text = { Text(tShare) },
@@ -671,11 +823,15 @@ fun BrowserScreen() {
                         text = { Text(tGoogle) },
                         onClick = { showMenu = false; openGoogle() }
                     )
+                    DropdownMenuItem(
+                        text = { Text(tClearData) },
+                        onClick = { showMenu = false; clearAllData() }
+                    )
                 }
             }
         }
 
-        // دکمه‌های ناوبری
+        // دکمه‌های ناوبری (در RTL آیکون‌ها جهت درست را نشان می‌دهند)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -684,11 +840,11 @@ fun BrowserScreen() {
             IconButton(
                 onClick = { goBack() },
                 enabled = active.canBack || active.url.isNotEmpty()
-            ) { Icon(Icons.Filled.ArrowBack, contentDescription = tBack) }
+            ) { Icon(backIcon, contentDescription = tBack) }
             IconButton(
                 onClick = { active.webView?.goForward() },
                 enabled = active.canForward
-            ) { Icon(Icons.Filled.ArrowForward, contentDescription = tForward) }
+            ) { Icon(forwardIcon, contentDescription = tForward) }
             IconButton(onClick = { active.webView?.reload() }) {
                 Icon(Icons.Filled.Refresh, contentDescription = tReload)
             }
@@ -705,6 +861,15 @@ fun BrowserScreen() {
             IconButton(onClick = { showFind = !showFind }) {
                 Icon(Icons.Filled.Search, contentDescription = tFind)
             }
+        }
+
+        // یادآوری تب خصوصی
+        if (active.isPrivate) {
+            Text(
+                tPrivateNote,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         // نوار پیشرفت بارگذاری
