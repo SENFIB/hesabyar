@@ -130,7 +130,8 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
         tr("گزارش‌ها", "Reports", "التقارير"),
         tr("چک و سفته", "Cheques & notes", "الشيكات والسندات"),
         tr("پیامک‌ها", "SMS", "الرسائل"),
-        tr("کالاها", "Inventory", "المخزون")
+        tr("کالاها", "Inventory", "المخزون"),
+        tr("حقوق و دستمزد", "Salary & wages", "الرواتب والأجور")
     )
     val searchByPhotoText = tr("جست‌وجو با عکس", "Search by photo", "بحث بالصورة")
 
@@ -149,7 +150,8 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
                 1 -> ReportsTab(vm, regionType)
                 2 -> ChecksTab(regionType)
                 3 -> SmsTab(vm, regionType)
-                else -> InventoryScreen(vm, regionType)
+                4 -> InventoryScreen(vm, regionType)
+                else -> SalaryScreen(vm, regionType)
             }
             if (tab == 4) {
                 ExtendedFloatingActionButton(
@@ -163,7 +165,6 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
             }
         }
     }
-
     if (showImageSearch) {
         ImageSearchDialog(onDismiss = { showImageSearch = false })
     }
@@ -174,6 +175,7 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
 @Composable
 fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val all by vm.transactions.collectAsState()
+
     var period by remember { mutableStateOf(BackupPeriod.MONTHLY) }
     var typeFilter by rememberSaveable { mutableStateOf(0) } // 0 همه، 1 درآمد، 2 هزینه
     var sortByAmount by rememberSaveable { mutableStateOf(false) }
@@ -216,6 +218,7 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val toMs = remember(toText, regionType) { parseDayIn(toText, regionType) }
     val customInvalid = period == BackupPeriod.CUSTOM && (fromMs == null || toMs == null)
     val range: BackupRange? = if (customInvalid) null else backupRangeFor(period, fromMs, toMs)
+
     val inPeriod: List<TransactionEntity> = if (customInvalid) {
         emptyList<TransactionEntity>()
     } else {
@@ -658,7 +661,6 @@ fun ChecksTab(regionType: CalendarType) {
                 }
             }
         }
-
         if (alerts.isNotEmpty()) {
             item {
                 Card(
@@ -680,7 +682,6 @@ fun ChecksTab(regionType: CalendarType) {
                 AlertLine(c = c, regionType = regionType, dueWord = tDueWord)
             }
         }
-
         item {
             Text(tAllTitle, style = MaterialTheme.typography.titleMedium)
         }
