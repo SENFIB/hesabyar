@@ -26,9 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -40,6 +38,7 @@ private const val FISCAL_AUTO_KEY = "fiscal_auto"
 private val FISCAL_VALUES = listOf(CalendarType.GREGORIAN, CalendarType.PERSIAN, CalendarType.HIJRI)
 
 // ---------- تقویم سال مالی: حالت خودکار (بر اساس زبان) ----------
+
 fun fiscalAutoOn(ctx: Context): Boolean =
     ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(FISCAL_AUTO_KEY, true)
 
@@ -53,19 +52,23 @@ fun setFiscalAutoOn(ctx: Context, on: Boolean) {
 private fun parentPage(page: String): String =
     if (page.startsWith("part_")) "colors" else PAGE_HOME
 
-// فلش «برگشت»: در RTL به راست و در LTR به چپ
+// جهت فلش‌ها بر اساس زبان برنامه (مثل مرورگر)، نه تنظیمات گوشی
+private fun isRtlLang(lang: String): Boolean = lang == "fa" || lang == "ar"
+
+// فلش «برگشت»: در زبان راست‌به‌چین به راست و در انگلیسی به چپ
 @Composable
 private fun backIcon(): ImageVector =
-    if (LocalLayoutDirection.current == LayoutDirection.Rtl) Icons.Filled.ArrowForward
+    if (isRtlLang(currentLang())) Icons.Filled.ArrowForward
     else Icons.Filled.ArrowBack
 
-// فلش «به جلو» در فهرست‌ها: در RTL به چپ و در LTR به راست
+// فلش «به جلو» در فهرست‌ها: در زبان راست‌به‌چین به چپ و در انگلیسی به راست
 @Composable
 private fun chevronIcon(): ImageVector =
-    if (LocalLayoutDirection.current == LayoutDirection.Rtl) Icons.Filled.KeyboardArrowLeft
+    if (isRtlLang(currentLang())) Icons.Filled.KeyboardArrowLeft
     else Icons.Filled.KeyboardArrowRight
 
 // ---------- صفحه اصلی تنظیمات و زیرصفحه‌ها ----------
+
 @Composable
 fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
     var page by rememberSaveable { mutableStateOf(PAGE_HOME) }
@@ -90,6 +93,7 @@ fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
                 )
             }
         }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -161,8 +165,8 @@ private fun SettingsHome(vm: MainViewModel, onOpen: (String) -> Unit) {
     val fiscal by vm.fiscal.collectAsState()
     val deviceClock by vm.deviceClock.collectAsState()
     val is24 by ClockFormat.is24h.collectAsState()
-    val place = (WeatherStore.state as? WeatherState.Ok)?.place ?: WeatherStore.savedPlace(ctx)
 
+    val place = (WeatherStore.state as? WeatherState.Ok)?.place ?: WeatherStore.savedPlace(ctx)
     val modeName = MODE_LABELS.labelsFor(lang)[ts.mode.coerceIn(0, MODE_LABELS.lastIndex)]
     val fontName = FONT_LABELS.labelsFor(lang)[ts.fontIndex.coerceIn(0, FONT_LABELS.lastIndex)]
     val paletteName = PALETTES[ts.paletteIndex.coerceIn(0, PALETTES.lastIndex)].name.of(lang)
@@ -195,34 +199,27 @@ private fun SettingsHome(vm: MainViewModel, onOpen: (String) -> Unit) {
         title = tr("ظاهر", "Appearance", "المظهر"),
         subtitle = "$modeName · $fontName"
     ) { onOpen("look") }
-
     NavCard(
         title = tr("شخصی‌سازی رنگ‌ها", "Colors", "الألوان"),
         subtitle = tr("طرح: ", "Scheme: ", "النظام: ") + paletteName
     ) { onOpen("colors") }
-
     NavCard(title = tr("زبان", "Language", "اللغة"), subtitle = langName) { onOpen("lang") }
-
     NavCard(
         title = tr("رمز و قفل", "Password and lock", "كلمة المرور والقفل"),
         subtitle = lockSub
     ) { onOpen("lock") }
-
     NavCard(
         title = tr("ساعت و تاریخ", "Clock and date", "الساعة والتاريخ"),
         subtitle = clockSub
     ) { onOpen("clock") }
-
     NavCard(
         title = tr("تقویم سال مالی", "Fiscal calendar", "تقويم السنة المالية"),
         subtitle = fiscalSub
     ) { onOpen("fiscal") }
-
     NavCard(
         title = tr("آب‌وهوا و موقعیت", "Weather and location", "الطقس والموقع"),
         subtitle = placeSub
     ) { onOpen("weather") }
-
     NavCard(
         title = tr("پشتیبان‌گیری و بازیابی", "Backup and restore", "النسخ الاحتياطي والاستعادة"),
         subtitle = tr("خروجی و بازیابی فایل", "Export and restore a file", "تصدير واستعادة ملف")
@@ -272,6 +269,7 @@ private fun NavCard(title: String, subtitle: String, onClick: () -> Unit) {
 }
 
 // ---------- ظاهر ----------
+
 @Composable
 private fun LookPage() {
     val ctx = LocalContext.current
@@ -314,6 +312,7 @@ private fun LookPage() {
 }
 
 // ---------- شخصی‌سازی رنگ‌ها ----------
+
 @Composable
 private fun ColorsPage(onOpen: (String) -> Unit) {
     val ctx = LocalContext.current
@@ -452,6 +451,7 @@ private fun PartPage(part: ThemePart) {
 }
 
 // ---------- زبان ----------
+
 @Composable
 private fun LanguagePage() {
     val lang = currentLang()
@@ -473,6 +473,7 @@ private fun LanguagePage() {
 }
 
 // ---------- رمز و قفل ----------
+
 @Composable
 private fun LockPage() {
     val ctx = LocalContext.current
@@ -583,6 +584,7 @@ private fun LockPage() {
 }
 
 // ---------- ساعت و تاریخ ----------
+
 @Composable
 private fun ClockPage(vm: MainViewModel) {
     val deviceClock by vm.deviceClock.collectAsState()
@@ -599,13 +601,13 @@ private fun ClockPage(vm: MainViewModel) {
 }
 
 // ---------- تقویم سال مالی ----------
+
 @Composable
 private fun FiscalPage(vm: MainViewModel) {
     val ctx = LocalContext.current
     val lang = currentLang()
     val fiscal by vm.fiscal.collectAsState()
     var auto by remember { mutableStateOf(fiscalAutoOn(ctx)) }
-
     val autoLabel = tr("بر اساس زبان", "Based on language", "حسب اللغة")
     val labels = listOf(autoLabel) + fiscalLabels()
     val autoHint = tr(
@@ -613,7 +615,6 @@ private fun FiscalPage(vm: MainViewModel) {
         "Until you pick a calendar manually, the fiscal calendar follows the app language.",
         "حتى تختار تقويمًا يدوياً، يتبع تقويم السنة المالية لغة التطبيق."
     )
-
     val idx = FISCAL_VALUES.indexOf(fiscal)
     val selectedIndex = if (auto) 0 else (idx + 1).coerceAtLeast(1)
 
@@ -638,6 +639,7 @@ private fun FiscalPage(vm: MainViewModel) {
 }
 
 // ---------- آب‌وهوا و موقعیت (شامل به‌روزرسانی خودکار) ----------
+
 @Composable
 private fun WeatherPage() {
     val ctx = LocalContext.current
@@ -654,7 +656,6 @@ private fun WeatherPage() {
 
     val currentText = tr("شهر فعلی: ", "Current city: ", "المدينة الحالية: ") +
             place.ifBlank { tr("تنظیم نشده", "Not set", "غير محدد") }
-
     val autoOptions: List<Pair<Int, String>> = listOf(
         0 to tr("خاموش", "Off", "إيقاف"),
         1 to tr("هر ۱ ساعت", "Every 1 h", "كل ساعة"),
@@ -710,6 +711,7 @@ private fun WeatherPage() {
 }
 
 // ---------- کمک‌های صفحه ----------
+
 @Composable
 private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
