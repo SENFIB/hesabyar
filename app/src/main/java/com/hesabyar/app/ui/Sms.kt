@@ -37,7 +37,7 @@ import org.json.JSONArray
 const val SMS_DB_NAME = "hesabyar_sms.db"
 private const val SMS_PREFS = "hesabyar_sms"
 private const val SMS_SENDERS_KEY = "senders"
-private const val SMS_SCAN_LIMIT = 1000
+private const val SMS_SCAN_LIMIT = 3000
 
 data class SmsMessage(val sender: String, val body: String, val dateMillis: Long)
 
@@ -90,6 +90,8 @@ private fun sameSender(a: String, b: String): Boolean {
 
 // ---------- خواندن پیامک‌ها ----------
 
+// پیامک‌های ورودی را از جدید به قدیم می‌خواند و فقط فرستنده‌های انتخاب‌شده را برمی‌گرداند.
+// اگر دسترسی نباشد یا خطایی رخ دهد، خطا به بیرون پرتاب می‌شود تا پیام مناسب نشان داده شود.
 private fun readInboxFor(ctx: Context, senders: List<String>): List<SmsMessage> {
     if (senders.isEmpty() || !hasSmsPermission(ctx)) return emptyList()
     val out = ArrayList<SmsMessage>()
@@ -98,14 +100,15 @@ private fun readInboxFor(ctx: Context, senders: List<String>): List<SmsMessage> 
         arrayOf(Telephony.Sms.ADDRESS, Telephony.Sms.BODY, Telephony.Sms.DATE),
         null,
         null,
-        "${Telephony.Sms.DATE} DESC LIMIT $SMS_SCAN_LIMIT"
+        Telephony.Sms.DATE + " DESC"
     ) ?: return out
-
     cursor.use { c ->
         val iAddress = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
         val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
         val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
-        while (c.moveToNext()) {
+        var scanned = 0
+        while (c.moveToNext() && scanned < SMS_SCAN_LIMIT) {
+            scanned++
             val address = c.getString(iAddress) ?: continue
             if (senders.none { sameSender(it, address) }) continue
             out.add(SmsMessage(address, c.getString(iBody) ?: "", c.getLong(iDate)))
@@ -254,19 +257,29 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
         "٢. اضغط ⋮ في الأعلى واختر «Allow restricted settings» (السماح بالإعدادات المقيّدة)."
     )
     val tStep3 = tr(
-        "۳. با اثر انگشت یا قفل صفحه تأیید کنید.",
-        "3. Confirm with your fingerprint or screen lock.",
-        "٣. أكّد ببصمة الإصبع أو قفل الشاشة."
+        "۳. به برنامه برگردید، «اجازه دسترسی به پیامک‌ها» را بزنید و «اجازه» را انتخاب کنید.",
+        "3. Come back to the app, tap “Allow SMS access” and choose Allow.",
+        "٣. ارجع إلى التطبيق واضغط «السماح بالوصول إلى الرسائل» واختر السماح."
     )
     val tStep4 = tr(
-        "۴. به برنامه برگردید، «بررسی دوباره» را بزنید و سپس «اجازه دسترسی به پیامک‌ها» را بزنید.",
-        "4. Come back to the app, tap “Check again”, then “Allow SMS access”.",
-        "٤. ارجع إلى التطبيق واضغط «تحقق مرة أخرى» ثم «السماح بالوصول إلى الرسائل»."
+        "۴. اگر باز هم نشد، از بخش «راه جایگزین» پایین همین صفحه استفاده کنید؛ آن روش به هیچ اجازه‌ای نیاز ندارد.",
+        "4. If it still does not work, use the “Alternative” section below; it needs no permission.",
+        "٤. إذا لم ينجح، استخدم قسم «بديل» أدناه؛ فهو لا يحتاج إلى أي إذن."
     )
     val tTip = tr(
-        "اگر گزینه «Allow restricted settings» دیده نشد، یک بار اجازه را بزنید و در پنجره‌ای که باز می‌شود «رد» را انتخاب کنید؛ بعد مراحل بالا را دوباره انجام دهید.",
-        "If “Allow restricted settings” is missing, tap Allow once, choose Deny in the window, then repeat the steps above.",
-        "إذا لم يظهر «Allow restricted settings»، اضغط السماح مرة واحدة واختر رفض في النافذة، ثم كرر الخطوات أعلاه."
+        "اگر گزینه «Allow restricted settings» دیده نشد، یک بار «اجازه دسترسی» را بزنید و در پنجره‌ای که باز می‌شود «رد» را انتخاب کنید؛ بعد مراحل بالا را دوباره انجام دهید.",
+        "If “Allow restricted settings” is missing, tap Allow access once, choose Deny in the window, then repeat the steps above.",
+        "إذا لم يظهر «Allow restricted settings»، اضغط السماح بالوصول مرة واحدة واختر رفض في النافذة، ثم كرر الخطوات أعلاه."
+    )
+    val tDenied = tr(
+        "اجازه پیامک داده نشد. اگر پنجره اجازه باز نشد، اول مرحله ۲ را انجام دهید.",
+        "SMS permission was not granted. If no window appeared, do step 2 first.",
+        "لم يُمنح إذن الرسائل. إذا لم تظهر النافذة، نفّذ الخطوة ٢ أولاً."
+    )
+    val tReadFailed = tr(
+        "خواندن پیامک‌ها انجام نشد. دوباره تلاش کنید یا از «راه جایگزین» استفاده کنید.",
+        "Reading messages failed. Try again or use the “Alternative” section.",
+        "فشلت قراءة الرسائل. حاول مرة أخرى أو استخدم قسم «بديل»."
     )
     val tNoSenders = tr("هنوز سرشماره‌ای اضافه نشده است.", "No sender numbers yet.", "لم تُضف أي أرقام بعد.")
     val tSendersTitle = tr("سرشماره‌های مجاز", "Allowed sender numbers", "أرقام المرسل المسموح بها")
@@ -290,21 +303,36 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     )
     val tNeedSender = tr("اول یک سرشماره اضافه کنید.", "Add a sender number first.", "أضف رقم مرسل أولاً.")
     val tSavedTx = tr("تراکنش ثبت شد ✓", "Transaction recorded ✓", "تم تسجيل المعاملة ✓")
-    val tNoPerm = tr("اجازه پیامک داده نشد.", "SMS permission was not granted.", "لم يُمنح إذن الرسائل.")
     val tStillNo = tr("هنوز اجازه پیامک فعال نیست.", "SMS access is still not on.", "الوصول إلى الرسائل ما زال غير مفعل.")
     val tNotFound = tr("پیامکی از این سرشماره‌ها پیدا نشد.", "No messages found from these senders.", "لم يُعثر على رسائل من هؤلاء المرسلين.")
     val tOpenAppSettings = tr("باز کردن تنظیمات برنامه", "Open app settings", "فتح إعدادات التطبيق")
     val tRecheck = tr("بررسی دوباره", "Check again", "تحقق مرة أخرى")
 
+    // راه جایگزین: چسباندن متن پیامک
+    val tPasteTitle = tr("راه جایگزین: چسباندن متن پیامک", "Alternative: paste message text", "بديل: لصق نص الرسالة")
+    val tPasteHint = tr(
+        "پیامک را در برنامه پیامک‌تان باز کنید، متنش را کپی کنید و اینجا بچسبانید. این روش هیچ اجازه‌ای نمی‌خواهد.",
+        "Open the message in your SMS app, copy its text and paste it here. This method needs no permission.",
+        "افتح الرسالة في تطبيق الرسائل، انسخ نصها والصقه هنا. هذه الطريقة لا تحتاج إلى أي إذن."
+    )
+    val tPasteSender = tr("فرستنده (نام بانک یا شماره)", "Sender (bank name or number)", "المرسل (اسم البنك أو الرقم)")
+    val tPasteBody = tr("متن پیامک", "Message text", "نص الرسالة")
+    val tPasteBtn = tr("افزودن این پیامک به برنامه", "Add this message to the app", "إضافة هذه الرسالة إلى التطبيق")
+    val tPasteEmpty = tr("فرستنده و متن پیامک را وارد کنید.", "Enter the sender and the message text.", "أدخل المرسل ونص الرسالة.")
+    val tPasteOk = tr("پیامک به برنامه اضافه شد ✓", "Message added to the app ✓", "أُضيفت الرسالة إلى التطبيق ✓")
+
     var granted by remember { mutableStateOf(hasSmsPermission(ctx)) }
     var askDialog by remember { mutableStateOf(false) }
     var senders by remember { mutableStateOf(loadSenders(ctx)) }
     var newSender by remember { mutableStateOf("") }
+    var pasteSender by remember { mutableStateOf("") }
+    var pasteBody by remember { mutableStateOf("") }
     var found by remember { mutableStateOf<List<SmsMessage>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
     var imported by remember { mutableStateOf<List<ImportedSms>>(emptyList()) }
     var editing by remember { mutableStateOf<ImportedSms?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<String?>(null) }
 
     // خواندن فهرست پیامک‌های ذخیره‌شده، بیرون از رابط کاربری
     LaunchedEffect(Unit) {
@@ -317,6 +345,7 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 granted = hasSmsPermission(ctx)
+                if (granted) message = null
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -328,7 +357,8 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     ) { _ ->
         // به جواب پنجره اعتماد نمی‌کنیم؛ وضعیت واقعی گوشی خوانده می‌شود
         granted = hasSmsPermission(ctx)
-        message = if (granted) null else tNoPerm
+        info = null
+        message = if (granted) null else tDenied
     }
 
     val openAppSettings: () -> Unit = {
@@ -357,9 +387,19 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
         }
         scope.launch {
             loading = true
-            found = withContext(Dispatchers.IO) { readInboxFor(ctx, senders) }
+            message = null
+            val result = withContext(Dispatchers.IO) { runCatching { readInboxFor(ctx, senders) } }
             loading = false
-            message = if (found.isEmpty()) tNotFound else null
+            result.fold(
+                onSuccess = { list ->
+                    found = list
+                    message = if (list.isEmpty()) tNotFound else null
+                },
+                onFailure = {
+                    found = emptyList()
+                    message = tReadFailed
+                }
+            )
         }
     }
 
@@ -367,6 +407,22 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
         scope.launch {
             withContext(Dispatchers.IO) { importSms(ctx, m) }
             imported = withContext(Dispatchers.IO) { loadImported(ctx) }
+        }
+    }
+
+    fun addPasted() {
+        val s = pasteSender.trim()
+        val b = pasteBody.trim()
+        if (s.isEmpty() || b.isEmpty()) {
+            message = tPasteEmpty
+            return
+        }
+        scope.launch {
+            withContext(Dispatchers.IO) { importSms(ctx, SmsMessage(s, b, System.currentTimeMillis())) }
+            imported = withContext(Dispatchers.IO) { loadImported(ctx) }
+            pasteBody = ""
+            message = null
+            info = tPasteOk
         }
     }
 
@@ -409,6 +465,34 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
                     OutlinedButton(onClick = recheck, modifier = Modifier.fillMaxWidth()) {
                         Text(tRecheck)
                     }
+                }
+            }
+        }
+
+        // راه جایگزین: چسباندن متن پیامک (بدون نیاز به اجازه)
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(tPasteTitle, style = MaterialTheme.typography.titleMedium)
+                Text(tPasteHint, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = pasteSender,
+                    onValueChange = { pasteSender = it },
+                    singleLine = true,
+                    label = { Text(tPasteSender) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = pasteBody,
+                    onValueChange = { pasteBody = it },
+                    minLines = 3,
+                    label = { Text(tPasteBody) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(onClick = { addPasted() }, modifier = Modifier.fillMaxWidth()) {
+                    Text(tPasteBtn)
                 }
             }
         }
@@ -467,6 +551,7 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
         }
 
         message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        info?.let { Text(it, style = MaterialTheme.typography.labelLarge) }
         if (loading) {
             Text(tLoading, style = MaterialTheme.typography.bodySmall)
         }
@@ -565,7 +650,7 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
                     imported = withContext(Dispatchers.IO) { loadImported(ctx) }
                 }
                 editing = null
-                message = tSavedTx
+                info = tSavedTx
             }
         )
     }
