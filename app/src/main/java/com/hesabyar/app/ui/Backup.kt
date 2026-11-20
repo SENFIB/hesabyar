@@ -41,15 +41,22 @@ private const val BACKUP_APP = "hesabyar"
 private const val BACKUP_FORMAT = 2
 private const val IMAGE_DIR = "inv_images"
 private const val IMAGE_ENTRY_PREFIX = "images/"
+
 private const val DB_MAIN = "hesabyar.db"
 private const val DB_CHEQUES = "hesabyar_cheques.db"
 private const val DB_INVENTORY = "hesabyar_inventory.db"
+
 private const val REASON_NOT_BACKUP = "not_backup"
 private const val REASON_NEWER = "newer"
 
-private val BACKUP_DBS = listOf(DB_MAIN, DB_CHEQUES, DB_INVENTORY, SMS_DB_NAME)
-private val BACKUP_PREFS = listOf("hesabyar_prefs", "hesabyar_theme", "hesabyar_weather")
-private val SKIP_PREF_KEYS = setOf("storage_notice_seen", "geo_cache", "geo_cache_key")
+private const val BACKUP_DAY_MS = 24L * 60L * 60L * 1000L
+
+private val BACKUP_DBS = listOf(DB_MAIN, DB_CHEQUES, DB_INVENTORY, SMS_DB_NAME, SALARY_DB_NAME)
+private val BACKUP_PREFS = listOf("hesabyar_prefs", "hesabyar_theme", "hesabyar_weather", "hesabyar_sms")
+private val SKIP_PREF_KEYS = setOf("storage_notice_seen", "geo_cache", "geo_cache_key", "geo_cache_time")
+
+// ستون‌هایی که مسیر فایل عکس دارند؛ فایل عکس همراه بکاپ می‌رود
+private val IMAGE_COLUMNS = setOf("image_path", "photo_path")
 
 // ستون‌های تاریخ که بازه زمانی روی آن‌ها اعمال می‌شود
 private val DATE_COLUMNS = mapOf("transactions" to "dateMillis", "sales" to "date_millis")
@@ -60,7 +67,8 @@ private val EXCEL_SHEETS = mapOf(
     "products" to "محصولات",
     "cheques" to "چک و سفته",
     "items" to "انبار",
-    "sales" to "فروش"
+    "sales" to "فروش",
+    "employees" to "حقوق و دستمزد"
 )
 
 private val COLUMN_LABELS = mapOf(
@@ -89,7 +97,16 @@ private val COLUMN_LABELS = mapOf(
     "qty" to "تعداد",
     "unit_price" to "قیمت واحد",
     "total" to "جمع",
-    "date_millis" to "تاریخ"
+    "date_millis" to "تاریخ",
+    "position" to "سمت",
+    "married" to "وضعیت تأهل",
+    "salary" to "حقوق ماهیانه",
+    "insurance_percent" to "درصد بیمه",
+    "supplementary" to "بیمه تکمیلی",
+    "has_children" to "حق اولاد",
+    "child_count" to "تعداد فرزند",
+    "child_allowance" to "حق هر فرزند",
+    "created_millis" to "تاریخ ثبت"
 )
 
 // الگوی ابتدای دستور CREATE برای اینکه دوباره ساخته نشوند
@@ -123,6 +140,7 @@ private fun startOfDay(c: Calendar): Long {
 }
 
 // بازه‌ها بر اساس تاریخ میلادی محاسبه می‌شوند. ALL یعنی بدون محدودیت زمانی.
+// برای CUSTOM ورودی‌ها ابتدای روز هستند (از parseDayIn با تقویم زبان)؛ تا پایان روز «تا تاریخ» حساب می‌شود.
 fun backupRangeFor(period: BackupPeriod, customFrom: Long?, customTo: Long?): BackupRange? {
     val now = System.currentTimeMillis()
     val cal = Calendar.getInstance()
@@ -145,19 +163,12 @@ fun backupRangeFor(period: BackupPeriod, customFrom: Long?, customTo: Long?): Ba
         BackupPeriod.CUSTOM -> {
             val from = requireNotNull(customFrom) { "تاریخ شروع معتبر نیست" }
             val to = requireNotNull(customTo) { "تاریخ پایان معتبر نیست" }
-            val end = Calendar.getInstance().apply {
-                timeInMillis = to
-                set(Calendar.HOUR_OF_DAY, 23)
-                set(Calendar.MINUTE, 59)
-                set(Calendar.SECOND, 59)
-                set(Calendar.MILLISECOND, 999)
-            }
-            BackupRange(from, end.timeInMillis)
+            BackupRange(from, to + BACKUP_DAY_MS - 1L)
         }
     }
 }
 
-// تبدیل متن yyyy/MM/dd میلادی به میلی‌ثانیه
+// تبدیل متن yyyy/MM/dd میلادی به میلی‌ثانیه (نگه داشته شده برای سازگاری)
 fun parseBackupDay(text: String): Long? = try {
     val f = SimpleDateFormat("yyyy/MM/dd", Locale.US)
     f.isLenient = false
@@ -238,7 +249,7 @@ private fun dumpTable(
     db.rawQuery(sql, args).use { c ->
         val names = c.columnNames
         names.forEach { columns.put(it) }
-        val imageIndex = names.indexOf("image_path")
+        val imageIndexes = names.indices.filter { names[it] in IMAGE_COLUMNS }.toSet()
         while (c.moveToNext()) {
             val row = JSONObject()
             for (i in names.indices) {
@@ -248,8 +259,8 @@ private fun dumpTable(
                     Cursor.FIELD_TYPE_STRING -> c.getString(i)
                     else -> JSONObject.NULL
                 }
-                // عکس کالا: فایل را همراه بکاپ می‌بریم و مسیر را به نام داخل فایل تبدیل می‌کنیم
-                if (i == imageIndex && value is String && value.isNotBlank()) {
+                // عکس: فایل را همراه بکاپ می‌بریم و مسیر را به نام داخل فایل تبدیل می‌کنیم
+                if (i in imageIndexes && value is String && value.isNotBlank()) {
                     val file = imageFileOf(ctx, value)
                     value = if (file.exists()) {
                         val entry = IMAGE_ENTRY_PREFIX + file.name
@@ -264,7 +275,6 @@ private fun dumpTable(
             rows.put(row)
         }
     }
-
     return JSONObject()
         .put("name", table)
         .put("sql", tableSql(db, table) ?: JSONObject.NULL)
@@ -336,11 +346,9 @@ private fun buildBundle(ctx: Context, range: BackupRange?, periodName: String): 
         .put("createdAt", System.currentTimeMillis())
         .put("counts", counts)
         .put("images", images.size)
-
     val full = JSONObject(header.toString())
         .put("databases", databases)
         .put("prefs", prefs)
-
     return BackupBundle(header, full, images)
 }
 
@@ -391,13 +399,16 @@ private fun runExport(ctx: Context, uri: Uri, kind: ExportKind, period: BackupPe
 
 // ================= خروجی اکسل =================
 
-private fun isDateColumn(c: String) = c == "dateMillis" || c == "dueMillis" || c == "date_millis"
+private fun isDateColumn(c: String) =
+    c == "dateMillis" || c == "dueMillis" || c == "date_millis" || c == "created_millis"
 
 private fun xlsxCell(column: String, value: Any?): Any {
     if (value == null || value === JSONObject.NULL) return ""
     return when {
         column == "isIncome" -> if (value.toString() == "1") "درآمد" else "هزینه"
         column == "category" -> value.toString().removePrefix("custom:")
+        column == "married" -> if (value.toString() == "1") "متاهل" else "مجرد"
+        column == "has_children" -> if (value.toString() == "1") "دارد" else "ندارد"
         isDateColumn(column) && value is Number ->
             SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.US).format(Date(value.toLong()))
         else -> value
@@ -416,7 +427,7 @@ private fun writeExcelBackup(out: OutputStream, b: BackupBundle) {
             val names = ArrayList<String>()
             for (c in 0 until cols.length()) {
                 val col = cols.getString(c)
-                if (col != "image_path") names.add(col)
+                if (col !in IMAGE_COLUMNS) names.add(col)
             }
             val rows = ArrayList<List<Any?>>()
             rows.add(names.map { COLUMN_LABELS[it] ?: it })
@@ -592,7 +603,7 @@ private fun putValue(ctx: Context, cv: ContentValues, key: String, value: Any?) 
         is Long -> cv.put(key, value)
         is Double -> cv.put(key, value)
         is String -> {
-            if (key == "image_path") cv.put(key, imagePathFor(ctx, value)) else cv.put(key, value)
+            if (key in IMAGE_COLUMNS) cv.put(key, imagePathFor(ctx, value)) else cv.put(key, value)
         }
         else -> cv.putNull(key)
     }
@@ -628,7 +639,6 @@ private fun restoreTable(ctx: Context, db: SQLiteDatabase, t: JSONObject): Int {
         if (sql.isBlank() || sql == "null") return 0
         db.execSQL(withIfNotExists(sql))
     }
-
     // ایندکس‌ها را هم می‌سازیم (اگر نباشند)؛ Room بدون آن‌ها اعتبارسنجی را رد می‌کند
     val indexes = t.optJSONArray("indexes")
     if (indexes != null) {
@@ -636,7 +646,6 @@ private fun restoreTable(ctx: Context, db: SQLiteDatabase, t: JSONObject): Int {
             runCatching { db.execSQL(withIfNotExists(indexes.getString(i))) }
         }
     }
-
     val rows = t.optJSONArray("rows") ?: return 0
     val columns = tableColumns(db, table)
     var count = 0
@@ -792,13 +801,15 @@ fun BackupSection(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // تاریخ بازه‌ها با تقویم زبان انتخابی کاربر (مثل گزارش‌ها و چک‌ها)
+    val lang = currentLang()
+    val regionType = CalendarType.forLanguage(lang)
+    val exampleDate = todayExample(regionType)
+
     val msgOk = tr("انجام شد ✓", "Done ✓", "تم ✓")
     val msgErr = tr("خطا: ", "Error: ", "خطأ: ")
-    val msgBadDates = tr(
-        "تاریخ‌ها را مثل 2025/01/31 وارد کنید.",
-        "Enter dates like 2025/01/31.",
-        "أدخل التواريخ بالشكل 2025/01/31."
-    )
+    val msgBadDates = tr("تاریخ‌ها را مثل ", "Enter dates like ", "أدخل التواريخ بالشكل ") +
+        exampleDate + tr(" وارد کنید.", ".", ".")
     val msgNotBackup = tr(
         "این فایل، پشتیبان حسابیار نیست.",
         "This file is not a Hesabyar backup.",
@@ -817,10 +828,12 @@ fun BackupSection(modifier: Modifier = Modifier) {
     val msgRestoredTitle = tr("بازیابی انجام شد", "Restore complete", "تمت الاستعادة")
     val btnRestart = tr("شروع دوباره برنامه", "Restart app", "إعادة تشغيل التطبيق")
     val msgPeriodNote = tr(
-        "بازه زمانی فقط روی تراکنش‌ها و فروش‌ها اعمال می‌شود. چک‌ها، کالاها، عکس‌ها و تنظیمات همیشه کامل ذخیره می‌شوند.",
-        "The period applies only to transactions and sales. Cheques, items, photos and settings are always saved in full.",
-        "تنطبق الفترة على المعاملات والمبيعات فقط. تُحفظ الشيكات والمنتجات والصور والإعدادات دائماً بالكامل."
+        "بازه زمانی فقط روی تراکنش‌ها و فروش‌ها اعمال می‌شود. چک‌ها، کالاها، حقوق، عکس‌ها و تنظیمات همیشه کامل ذخیره می‌شوند.",
+        "The period applies only to transactions and sales. Cheques, items, salaries, photos and settings are always saved in full.",
+        "تنطبق الفترة على المعاملات والمبيعات فقط. تُحفظ الشيكات والمنتجات والرواتب والصور والإعدادات دائماً بالكامل."
     )
+    val tFromLabel = tr("از تاریخ", "From", "من") + " (" + tr("مثلاً", "e.g.", "مثال") + " " + exampleDate + ")"
+    val tToLabel = tr("تا تاریخ", "To", "إلى") + " (" + tr("مثلاً", "e.g.", "مثال") + " " + exampleDate + ")"
 
     var period by remember { mutableStateOf(BackupPeriod.ALL) }
     var fromText by remember { mutableStateOf("") }
@@ -832,12 +845,12 @@ fun BackupSection(modifier: Modifier = Modifier) {
 
     fun customRangeOk(): Boolean =
         period != BackupPeriod.CUSTOM ||
-            (parseBackupDay(fromText) != null && parseBackupDay(toText) != null)
+            (parseDayIn(fromText, regionType) != null && parseDayIn(toText, regionType) != null)
 
     fun doExport(uri: Uri, kind: ExportKind) {
         val p = period
-        val from = parseBackupDay(fromText)
-        val to = parseBackupDay(toText)
+        val from = parseDayIn(fromText, regionType)
+        val to = parseDayIn(toText, regionType)
         scope.launch {
             busy = true
             status = withContext(Dispatchers.IO) {
@@ -881,19 +894,16 @@ fun BackupSection(modifier: Modifier = Modifier) {
     ) { uri ->
         if (uri != null) doExport(uri, ExportKind.FULL)
     }
-
     val jsonSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null) doExport(uri, ExportKind.JSON)
     }
-
     val xlsxSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) { uri ->
         if (uri != null) doExport(uri, ExportKind.EXCEL)
     }
-
     val restorePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -912,9 +922,9 @@ fun BackupSection(modifier: Modifier = Modifier) {
     val btnJson = tr("خروجی JSON", "JSON export", "تصدير JSON")
     val btnExcel = tr("خروجی اکسل", "Excel export", "تصدير Excel")
     val hintFull = tr(
-        "کامل: همه اطلاعات، عکس کالاها و تنظیمات. برای بازیابی در گوشی جدید.",
-        "Full: all data, item photos and settings. Use it to restore on a new phone.",
-        "كاملة: كل البيانات وصور المنتجات والإعدادات. للاستعادة على هاتف جديد."
+        "کامل: همه اطلاعات، حقوق کارمندان، عکس‌ها و تنظیمات. برای بازیابی در گوشی جدید.",
+        "Full: all data, employees, photos and settings. Use it to restore on a new phone.",
+        "كاملة: كل البيانات والرواتب والصور والإعدادات. للاستعادة على هاتف جديد."
     )
     val hintJson = tr(
         "فقط اطلاعات، بدون عکس. قابل بازیابی در همین برنامه.",
@@ -967,26 +977,24 @@ fun BackupSection(modifier: Modifier = Modifier) {
                 }
             }
             Text(msgPeriodNote, style = MaterialTheme.typography.bodySmall)
-
             if (period == BackupPeriod.CUSTOM) {
                 OutlinedTextField(
                     value = fromText,
                     onValueChange = { fromText = it },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("از تاریخ (مثلاً 2025/01/01)", "From (e.g. 2025/01/01)", "من (مثال 2025/01/01)")) }
+                    label = { Text(tFromLabel) }
                 )
                 OutlinedTextField(
                     value = toText,
                     onValueChange = { toText = it },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(tr("تا تاریخ (مثلاً 2025/01/31)", "To (e.g. 2025/01/31)", "إلى (مثال 2025/01/31)")) }
+                    label = { Text(tToLabel) }
                 )
             }
 
             Text(createTitle, style = MaterialTheme.typography.labelLarge)
-
             Button(
                 onClick = {
                     if (!customRangeOk()) {
@@ -1030,7 +1038,6 @@ fun BackupSection(modifier: Modifier = Modifier) {
             Text(hintExcel, style = MaterialTheme.typography.bodySmall)
 
             Spacer(modifier = Modifier.height(4.dp))
-
             Text(restoreTitle, style = MaterialTheme.typography.labelLarge)
             Text(restoreHint, style = MaterialTheme.typography.bodySmall)
             Button(
