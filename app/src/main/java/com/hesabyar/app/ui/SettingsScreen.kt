@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.*
@@ -52,7 +53,13 @@ fun setFiscalAutoOn(ctx: Context, on: Boolean) {
 private fun parentPage(page: String): String =
     if (page.startsWith("part_")) "colors" else PAGE_HOME
 
-// فلش «به جلو»: در فارسی/عربی (RTL) به چپ و در انگلیسی (LTR) به راست
+// فلش «برگشت»: در RTL به راست و در LTR به چپ
+@Composable
+private fun backIcon(): ImageVector =
+    if (LocalLayoutDirection.current == LayoutDirection.Rtl) Icons.Filled.ArrowForward
+    else Icons.Filled.ArrowBack
+
+// فلش «به جلو» در فهرست‌ها: در RTL به چپ و در LTR به راست
 @Composable
 private fun chevronIcon(): ImageVector =
     if (LocalLayoutDirection.current == LayoutDirection.Rtl) Icons.Filled.KeyboardArrowLeft
@@ -63,6 +70,7 @@ private fun chevronIcon(): ImageVector =
 fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
     var page by rememberSaveable { mutableStateOf(PAGE_HOME) }
     BackHandler(enabled = page != PAGE_HOME) { page = parentPage(page) }
+    val back = backIcon()
 
     Column(
         modifier = Modifier
@@ -73,7 +81,7 @@ fun SettingsScreen(vm: MainViewModel, regionType: CalendarType) {
         if (page != PAGE_HOME) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { page = parentPage(page) }) {
-                    Icon(Icons.Filled.ArrowBack, contentDescription = null)
+                    Icon(back, contentDescription = null)
                 }
                 Text(
                     text = pageTitle(page),
