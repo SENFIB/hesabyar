@@ -49,7 +49,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val deviceClock by vm.deviceClock.collectAsState()
     val tabsTop = ThemeStore.settings.tabsTop
 
-    // ۶ صفحه: ۰ حسابداری (شامل کالاها)، ۱ آب‌وهوا، ۲ مرورگر، ۳ یادداشت‌ها، ۴ دانلود، ۵ تنظیمات
+    // ۶ صفحه به ترتیب: ۰ حسابداری (شامل کالاها)، ۱ آب‌وهوا، ۲ یادداشت‌ها، ۳ مرورگر، ۴ دانلود، ۵ تنظیمات
     val pagerState = rememberPagerState(pageCount = { 6 })
     val scope = rememberCoroutineScope()
 
@@ -84,8 +84,8 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
                     when (page) {
                         0 -> AccountingScreen(vm, regionType)
                         1 -> WeatherScreen(vm, regionType)
-                        2 -> BrowserScreen()
-                        3 -> RemindersScreen(regionType)
+                        2 -> RemindersScreen(regionType)
+                        3 -> BrowserScreen()
                         4 -> DownloadsScreen()
                         else -> SettingsScreen(vm, regionType)
                     }
@@ -106,6 +106,7 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
 }
 
 // ---------- نوار تب‌ها (شیشه‌ای، بالا یا پایین) ----------
+
 // هر تب یا آیکون Material دارد یا یک نماد متنی (مثل 🌐) تا به کتابخانه آیکون اضافی نیاز نباشد
 private class BarTab(val label: String, val icon: ImageVector?, val glyph: String?)
 
@@ -113,16 +114,14 @@ private class BarTab(val label: String, val icon: ImageVector?, val glyph: Strin
 fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val base = partColor(ThemePart.TABS, MaterialTheme.colorScheme.surface)
     val on = onColorFor(base)
-
     val tabs = listOf(
         BarTab(stringResource(R.string.tab_ledger), Icons.Filled.Create, null),
         BarTab(stringResource(R.string.tab_weather), Icons.Filled.LocationOn, null),
-        BarTab(tr("مرورگر", "Browser", "المتصفح"), null, "🌐"),
         BarTab(tr("یادداشت‌ها", "Notes", "ملاحظات"), null, "🔔"),
+        BarTab(tr("مرورگر", "Browser", "المتصفح"), null, "🌐"),
         BarTab(tr("دانلود", "Downloads", "التنزيلات"), null, "⬇"),
         BarTab(stringResource(R.string.tab_settings), Icons.Filled.Settings, null)
     )
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -166,6 +165,7 @@ fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 // ---------- هدر شیشه‌ای: دکمه تم، تاریخ و ساعت، آب‌وهوا ----------
+
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val context = LocalContext.current
@@ -177,13 +177,10 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
             delay(1000)
         }
     }
-
     val locale = if (deviceClock) deviceLocale() else regionType.locale
     val zone = if (deviceClock) deviceTimeZone() else regionType.timeZone
-
     val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
     val timeText = formatWith(now, ClockFormat.timePattern(is24), locale, zone)
-
     val dark = isDarkNow()
     val weather = WeatherStore.state
     val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
@@ -200,7 +197,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
         WeatherState.Error -> "--°"
         WeatherState.None -> "--°"
     }
-
     val placeText = when (weather) {
         is WeatherState.Ok -> listOf(weather.place, conditionWord(weather.info.code, lang))
             .filter { it.isNotBlank() }
@@ -237,7 +233,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                 ) {
                     Text(if (dark) "☀" else "☾", style = MaterialTheme.typography.titleLarge)
                 }
-
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = dateText,
@@ -254,7 +249,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
                         maxLines = 1
                     )
                 }
-
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
@@ -281,12 +275,12 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
 }
 
 // ---------- تب حسابداری (بخش تراکنش‌ها؛ زیرتب‌ها در AccountingScreen هستند) ----------
+
 @Composable
 fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
     val transactions by vm.transactions.collectAsState()
     val totalIncome = transactions.filter { it.isIncome }.sumOf { it.amount }
     val totalExpense = transactions.filter { !it.isIncome }.sumOf { it.amount }
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -356,12 +350,10 @@ fun categoryName(key: String): String {
 fun AddTransactionCard(vm: MainViewModel) {
     val customIncome by vm.customIncome.collectAsState()
     val customExpense by vm.customExpense.collectAsState()
-
     var isIncome by remember { mutableStateOf(false) }
     val predefined = Category.entries.filter { it.isIncome == isIncome && it != Category.SALE }
     val customs = if (isIncome) customIncome else customExpense
     val options = predefined.map { it.key } + customs.map { CUSTOM_PREFIX + it }
-
     var selected by remember(isIncome) { mutableStateOf(predefined.first().key) }
     var customName by remember(isIncome) { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
@@ -369,7 +361,6 @@ fun AddTransactionCard(vm: MainViewModel) {
     // فقط ارقام انگلیسی ذخیره می‌شوند؛ جداکننده فقط در نمایش اضافه می‌شود
     var amountText by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<Int?>(null) }
-
     val isOther = selected == OTHER_EXPENSE || selected == OTHER_INCOME
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -378,7 +369,6 @@ fun AddTransactionCard(vm: MainViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(stringResource(R.string.add_transaction), style = MaterialTheme.typography.titleMedium)
-
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
                     selected = !isIncome,
@@ -391,7 +381,6 @@ fun AddTransactionCard(vm: MainViewModel) {
                     label = { Text(stringResource(R.string.income)) }
                 )
             }
-
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
@@ -399,7 +388,6 @@ fun AddTransactionCard(vm: MainViewModel) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
-
             OutlinedTextField(
                 value = amountText,
                 onValueChange = { amountText = digitsOnly(it) },
@@ -409,7 +397,6 @@ fun AddTransactionCard(vm: MainViewModel) {
                 visualTransformation = ThousandsVisualTransformation(),
                 modifier = Modifier.fillMaxWidth()
             )
-
             ExposedDropdownMenuBox(
                 expanded = expanded,
                 onExpandedChange = { expanded = it }
@@ -439,7 +426,6 @@ fun AddTransactionCard(vm: MainViewModel) {
                     }
                 }
             }
-
             if (isOther) {
                 OutlinedTextField(
                     value = customName,
@@ -449,11 +435,9 @@ fun AddTransactionCard(vm: MainViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-
             error?.let {
                 Text(stringResource(it), color = MaterialTheme.colorScheme.error)
             }
-
             Button(
                 onClick = {
                     val amount = amountText.toLongOrNull()
@@ -493,7 +477,6 @@ fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Uni
         type.locale,
         type.timeZone
     )
-
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
