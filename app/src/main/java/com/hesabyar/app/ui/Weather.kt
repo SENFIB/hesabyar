@@ -12,13 +12,20 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.CancellationSignal
-import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ListenableWorker
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import com.hesabyar.app.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,8 +45,25 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
+
+// ================= کلیدهای ذخیره =================
+
+private const val WEATHER_PREFS = "hesabyar_weather"
+private const val K_LAT = "geo_lat"
+private const val K_LON = "geo_lon"
+private const val K_PLACE = "geo_place"
+private const val K_CACHE = "geo_cache"
+private const val K_CACHE_KEY = "geo_cache_key"
+private const val K_CACHE_TIME = "geo_cache_time"
+private const val K_UNIT_F = "unit_f"
+private const val K_AUTO_HOURS = "auto_hours"
+private const val AUTO_WORK_NAME = "hesabyar_weather_auto"
+
+// اگر اطلاعات بیشتر از این مدت قدیمی باشد، هنگام باز شدن تب دوباره گرفته می‌شود
+private const val STALE_MS = 30L * 60L * 1000L
 
 // ================= مدل‌ها =================
 
@@ -81,14 +105,6 @@ sealed class LocResult {
 // ================= ذخیره و وضعیت آب‌وهوا =================
 
 object WeatherStore {
-    private const val PREFS = "hesabyar_weather"
-    private const val K_LAT = "geo_lat"
-    private const val K_LON = "geo_lon"
-    private const val K_PLACE = "geo_place"
-    private const val K_CACHE = "geo_cache"
-    private const val K_CACHE_KEY = "geo_cache_key"
-    private const val K_UNIT_F = "unit_f"
-
     var state: WeatherState by mutableStateOf(WeatherState.None)
         private set
 
@@ -98,11 +114,14 @@ object WeatherStore {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(WEATHER_PREFS, Context.MODE_PRIVATE)
 
     fun hasLocation(ctx: Context): Boolean = prefs(ctx).getString(K_LAT, null) != null
 
     fun savedPlace(ctx: Context): String = prefs(ctx).getString(K_PLACE, "") ?: ""
+
+    // زمان آخرین دریافت موفق اطلاعات (میلی‌ثانیه). صفر یعنی هنوز چیزی ذخیره نشده
+    fun lastUpdatedMillis(ctx: Context): Long = prefs(ctx).getLong(K_CACHE_TIME, 0L)
 
     fun loadUnit(ctx: Context) {
         fahrenheit = prefs(ctx).getBoolean(K_UNIT_F, false)
@@ -119,7 +138,33 @@ object WeatherStore {
             .putString(K_LON, lon.toString())
             .putString(K_PLACE, place)
             .apply()
+        state = WeatherState.Loading
         refresh(ctx)
+        WeatherAuto.ensure(ctx)
+    }
+
+    // وقتی تب آب‌وهوا باز می‌شود: اگر کش همین شهر تازه باشد همان نمایش داده می‌شود،
+    // وگرنه (یا اگر قدیمی باشد) از اینترنت گرفته می‌شود. بدون اینترنت، کش قبلی نشان داده می‌شود.
+    fun onScreenOpened(ctx: Context) {
+        loadUnit(ctx)
+        val p = prefs(ctx)
+        val lat = p.getString(K_LAT, null)?.toDoubleOrNull()
+        val lon = p.getString(K_LON, null)?.toDoubleOrNull()
+        val place = p.getString(K_PLACE, "") ?: ""
+        if (lat == null || lon == null) {
+            state = WeatherState.None
+            return
+        }
+        val key = "$lat,$lon"
+        val cachedRaw = if (p.getString(K_CACHE_KEY, null) == key) p.getString(K_CACHE, null) else null
+        val info = cachedRaw?.let { parseWeather(it) }
+        val age = System.currentTimeMillis() - p.getLong(K_CACHE_TIME, 0L)
+        if (info != null) {
+            state = WeatherState.Ok(place, info)
+            if (age > STALE_MS) refresh(ctx)
+        } else {
+            refresh(ctx)
+        }
     }
 
     fun refresh(ctx: Context) {
@@ -133,7 +178,8 @@ object WeatherStore {
             return
         }
         val key = "$lat,$lon"
-        state = WeatherState.Loading
+        // اگر اطلاعات قبلی روی صفحه است، تا رسیدن جواب جدید همان را نگه می‌داریم
+        if (state !is WeatherState.Ok) state = WeatherState.Loading
         val appCtx = ctx.applicationContext
         scope.launch {
             val raw = withContext(Dispatchers.IO) {
@@ -145,6 +191,7 @@ object WeatherStore {
                     prefs(appCtx).edit()
                         .putString(K_CACHE, raw)
                         .putString(K_CACHE_KEY, key)
+                        .putLong(K_CACHE_TIME, System.currentTimeMillis())
                         .apply()
                     state = WeatherState.Ok(place, info)
                 } else {
@@ -159,6 +206,68 @@ object WeatherStore {
             }
         }
     }
+}
+
+// ================= به‌روزرسانی خودکار (WorkManager) =================
+
+// فاصله‌های ممکن (ساعت). صفر یعنی خاموش
+object WeatherAuto {
+    const val DEFAULT_HOURS = 2
+
+    fun hours(ctx: Context): Int =
+        ctx.getSharedPreferences(WEATHER_PREFS, Context.MODE_PRIVATE).getInt(K_AUTO_HOURS, DEFAULT_HOURS)
+
+    fun setHours(ctx: Context, value: Int) {
+        ctx.getSharedPreferences(WEATHER_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(K_AUTO_HOURS, value)
+            .apply()
+        schedule(ctx, ExistingPeriodicWorkPolicy.UPDATE)
+    }
+
+    // فقط اگر کاری ثبت نشده باشد، ثبت می‌کند (بار دوم کاری انجام نمی‌دهد)
+    fun ensure(ctx: Context) = schedule(ctx, ExistingPeriodicWorkPolicy.KEEP)
+
+    private fun schedule(ctx: Context, policy: ExistingPeriodicWorkPolicy) {
+        val wm = WorkManager.getInstance(ctx.applicationContext)
+        val h = hours(ctx)
+        if (h <= 0 || !WeatherStore.hasLocation(ctx)) {
+            wm.cancelUniqueWork(AUTO_WORK_NAME)
+            return
+        }
+        val request = PeriodicWorkRequestBuilder<WeatherRefreshWorker>(h.toLong(), TimeUnit.HOURS)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        wm.enqueueUniquePeriodicWork(AUTO_WORK_NAME, policy, request)
+    }
+}
+
+// این کلاس توسط WorkManager اجرا می‌شود؛ فقط وقتی اینترنت وصل است و فاصله انتخابی گذشته باشد
+class WeatherRefreshWorker(appContext: Context, params: WorkerParameters) :
+    CoroutineWorker(appContext, params) {
+
+    override suspend fun doWork(): ListenableWorker.Result {
+        withContext(Dispatchers.IO) { fetchAndCache(applicationContext) }
+        return ListenableWorker.Result.success()
+    }
+}
+
+// گرفتن اطلاعات شهر ذخیره‌شده و ذخیره در کش (بدون به‌روزرسانی صفحه)
+private fun fetchAndCache(ctx: Context) {
+    val p = ctx.getSharedPreferences(WEATHER_PREFS, Context.MODE_PRIVATE)
+    val lat = p.getString(K_LAT, null)?.toDoubleOrNull() ?: return
+    val lon = p.getString(K_LON, null)?.toDoubleOrNull() ?: return
+    val raw = runCatching { httpGet(forecastUrl(lat, lon)) }.getOrNull() ?: return
+    if (parseWeather(raw) == null) return
+    p.edit()
+        .putString(K_CACHE, raw)
+        .putString(K_CACHE_KEY, "$lat,$lon")
+        .putLong(K_CACHE_TIME, System.currentTimeMillis())
+        .apply()
 }
 
 // ================= واحد دما و منطقه زمانی پیش‌بینی =================
@@ -334,7 +443,6 @@ private fun openMeteoSearch(q: String): List<CityResult> {
 suspend fun searchCities(ctx: Context, query: String, lang: String): List<CityResult> = coroutineScope {
     val text = query.trim()
     val q = URLEncoder.encode(text, "UTF-8")
-
     val sources: List<() -> List<CityResult>> = listOf(
         { geocodeList(q, lang) },
         { photonSearch(q, lang) },
@@ -342,14 +450,12 @@ suspend fun searchCities(ctx: Context, query: String, lang: String): List<CityRe
         { openMeteoSearch(q) },
         { geocodeList(q, "en") }
     )
-
     val jobs = sources.map { source ->
         async(Dispatchers.IO) {
             withTimeoutOrNull(8000L) { runCatching { source() }.getOrNull() } ?: emptyList()
         }
     }
     val merged = jobs.awaitAll().flatten()
-
     // حذف تکراری: شهرهایی که مختصات تقریباً یکسان دارند (حدود ۱۰ کیلومتر)
     val seen = HashSet<String>()
     merged
@@ -437,9 +543,7 @@ object LocationHelper {
 
                         @Deprecated("Deprecated in Java")
                         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-
                         override fun onProviderEnabled(provider: String) {}
-
                         override fun onProviderDisabled(provider: String) {}
                     }
                     cont.invokeOnCancellation { lm.removeUpdates(listener) }
@@ -456,18 +560,14 @@ object LocationHelper {
         if (!hasPermission(ctx)) return LocResult.Denied
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val fine = hasFine(ctx)
-
         val anyOn = providerOn(lm, LocationManager.GPS_PROVIDER) || providerOn(lm, LocationManager.NETWORK_PROVIDER)
         if (!anyOn) return LocResult.ServicesOff
-
         val order = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
             .filter { p -> providerOn(lm, p) && (p != LocationManager.GPS_PROVIDER || fine) }
-
         for (p in order) {
             val loc = withTimeoutOrNull(12_000L) { requestFix(ctx, lm, p) }
             if (loc != null) return LocResult.Ok(loc.latitude, loc.longitude)
         }
-
         // اگر تازه نبود، آخرین موقعیت تا ۶ ساعت قبل قابل قبول است
         val last = lastKnown(lm, fine)?.takeIf { System.currentTimeMillis() - it.time < 6L * 60L * 60L * 1000L }
         return if (last != null) LocResult.Ok(last.latitude, last.longitude) else LocResult.NotFound
