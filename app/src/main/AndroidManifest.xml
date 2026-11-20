@@ -28,6 +28,14 @@
             </intent-filter>
         </activity>
 
+        <!-- صفحه‌ی هشدار سطح ۱: روی قفل هم باز می‌شود -->
+        <activity
+            android:name=".ui.ReminderAlertActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
         <service
             android:name=".ui.DownloadService"
             android:exported="false"
