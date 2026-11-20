@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,6 +17,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      # کلید امضا را نگه می‌دارد تا هر بار همان کلید استفاده شود
+      - name: Restore signing key cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: hesabyar-signing-key-v1
+
+      - name: Create signing key (only if missing)
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore ~/.android/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
