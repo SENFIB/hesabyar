@@ -165,6 +165,7 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
             }
         }
     }
+
     if (showImageSearch) {
         ImageSearchDialog(onDismiss = { showImageSearch = false })
     }
@@ -175,7 +176,6 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
 @Composable
 fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val all by vm.transactions.collectAsState()
-
     var period by remember { mutableStateOf(BackupPeriod.MONTHLY) }
     var typeFilter by rememberSaveable { mutableStateOf(0) } // 0 همه، 1 درآمد، 2 هزینه
     var sortByAmount by rememberSaveable { mutableStateOf(false) }
@@ -224,6 +224,7 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     } else {
         all.filter { t -> range == null || t.dateMillis in range.from..range.to }
     }
+
     val income = inPeriod.filter { it.isIncome }.sumOf { it.amount }
     val expense = inPeriod.filter { !it.isIncome }.sumOf { it.amount }
     val shown = inPeriod.filter { typeFilter == 0 || (typeFilter == 1) == it.isIncome }
@@ -457,7 +458,8 @@ object ChequeStore {
         return out
     }
 
-    fun add(ctx: Context, ch: Cheque) {
+    // شناسه‌ی ردیف جدید را برمی‌گرداند
+    fun add(ctx: Context, ch: Cheque): Long {
         val cv = ContentValues().apply {
             put("kind", ch.kind)
             put("direction", ch.direction)
@@ -468,7 +470,7 @@ object ChequeStore {
             put("level", ch.level)
             put("done", if (ch.done) 1 else 0)
         }
-        db(ctx).insert("cheques", null, cv)
+        return db(ctx).insert("cheques", null, cv)
     }
 
     fun setDone(ctx: Context, id: Long, done: Boolean) {
@@ -484,6 +486,37 @@ object ChequeStore {
 private const val DAY_MS = 24L * 60L * 60L * 1000L
 private val REMIND_OPTIONS = listOf(0, 1, 3, 7, 14, 30)
 
+/**
+ * زمان‌بندی اعلان یک چک یا سفته با همان سیستم یادآورها.
+ * اگر زمان اعلان گذشته باشد، چیزی زمان‌بندی نمی‌شود (در کارت هشدارهای همین صفحه دیده می‌شود).
+ */
+private fun scheduleCheque(
+    ctx: Context,
+    c: Cheque,
+    prefix: String,
+    dueWord: String,
+    regionType: CalendarType
+) {
+    val fireAt = c.dueMillis - c.remindDays * DAY_MS
+    if (c.done || fireAt <= System.currentTimeMillis()) {
+        AlertWork.cancel(ctx, chequeAlertName(c.id))
+        return
+    }
+    val dueText = formatWith(c.dueMillis, "yyyy/MM/dd", regionType.locale, regionType.timeZone)
+    val text = c.person + " • " + formatMoney(c.amount) + " • " + dueWord + ": " + dueText
+    AlertWork.schedule(
+        ctx,
+        chequeAlertName(c.id),
+        fireAt,
+        prefix + c.person,
+        text,
+        c.level,
+        chequeNotifId(c.id),
+        "chq",
+        c.id
+    )
+}
+
 @Composable
 private fun remindLabel(days: Int): String = when (days) {
     0 -> tr("همان روز", "Same day", "في نفس اليوم")
@@ -496,12 +529,12 @@ private fun remindLabel(days: Int): String = when (days) {
 
 @Composable
 private fun levelText(level: Int): String = when (level) {
-    1 -> tr("درجه ۱: صفحه کامل هشدار", "Level 1: full-screen alert", "المستوى 1: تنبيه بملء الشاشة")
-    2 -> tr("درجه ۲: اعلان روی صفحه", "Level 2: on-screen notice", "المستوى 2: إشعار على الشاشة")
+    1 -> tr("درجه ۱: صفحه کامل با زنگ بلند", "Level 1: full screen with long alarm", "المستوى 1: ملء الشاشة مع منبه طويل")
+    2 -> tr("درجه ۲: بنر بالا با صدای متوسط", "Level 2: top banner with medium sound", "المستوى 2: شريط علوي وصوت متوسط")
     else -> tr(
-        "درجه ۳: فقط مرکز اعلان‌ها با صدای ملایم",
-        "Level 3: notification center only, soft sound",
-        "المستوى 3: مركز الإشعارات فقط بصوت خفيف"
+        "درجه ۳: فقط مرکز اعلان با صدای کوتاه",
+        "Level 3: notification centre only, short sound",
+        "المستوى 3: مركز الإشعارات فقط بصوت قصير"
     )
 }
 
@@ -550,12 +583,20 @@ fun ChecksTab(regionType: CalendarType) {
     val tAllTitle = tr("همه چک‌ها و سفته‌ها", "All cheques and notes", "كل الشيكات والسندات")
     val tNoEntries = tr("هنوز چکی ثبت نشده است.", "No entries yet.", "لا توجد عناصر بعد.")
     val tDueWord = tr("سررسید", "Due", "الاستحقاق")
+    val tAlertPrefix = tr("چک و سفته: ", "Cheque / note: ", "شيك / سند: ")
 
     // متن خطاها هم اینجا ساخته می‌شوند، نه داخل onClick
     val errNameText = tr("نام طرف حساب را وارد کنید", "Enter the party name", "أدخل اسم الطرف")
     val errAmountText = tr("مبلغ معتبر وارد کنید", "Enter a valid amount", "أدخل مبلغاً صحيحاً")
     val errDateText = tr("تاریخ را مثل ", "Write the date like ", "اكتب التاريخ مثل ") +
         exampleDate + tr(" بنویسید", "", "")
+
+    // هنگام باز شدن این زیرتب، اعلان چک‌های فعال که هنوز در آینده‌اند دوباره تنظیم می‌شوند
+    LaunchedEffect(Unit) {
+        ChequeStore.all(ctx).forEach { c ->
+            scheduleCheque(ctx, c, tAlertPrefix, tDueWord, regionType)
+        }
+    }
 
     val alerts = cheques.filter { !it.done && now >= it.dueMillis - it.remindDays * DAY_MS }
     val hasLevel1 = alerts.any { it.level == 1 }
@@ -632,20 +673,19 @@ fun ChecksTab(regionType: CalendarType) {
                                 amount == null || amount <= 0L -> errText = errAmountText
                                 due == null -> errText = errDateText
                                 else -> {
-                                    ChequeStore.add(
-                                        ctx,
-                                        Cheque(
-                                            id = 0L,
-                                            kind = kind,
-                                            direction = direction,
-                                            person = person.trim(),
-                                            amount = amount,
-                                            dueMillis = due,
-                                            remindDays = remindDays,
-                                            level = level,
-                                            done = false
-                                        )
+                                    val newCheque = Cheque(
+                                        id = 0L,
+                                        kind = kind,
+                                        direction = direction,
+                                        person = person.trim(),
+                                        amount = amount,
+                                        dueMillis = due,
+                                        remindDays = remindDays,
+                                        level = level,
+                                        done = false
                                     )
+                                    val newId = ChequeStore.add(ctx, newCheque)
+                                    scheduleCheque(ctx, newCheque.copy(id = newId), tAlertPrefix, tDueWord, regionType)
                                     person = ""
                                     amountText = ""
                                     dueText = ""
@@ -661,6 +701,12 @@ fun ChecksTab(regionType: CalendarType) {
                 }
             }
         }
+
+        // تست سه سطح اعلان (همان رفتار یادداشت‌ها)
+        item {
+            AlertTestCard()
+        }
+
         if (alerts.isNotEmpty()) {
             item {
                 Card(
@@ -682,6 +728,7 @@ fun ChecksTab(regionType: CalendarType) {
                 AlertLine(c = c, regionType = regionType, dueWord = tDueWord)
             }
         }
+
         item {
             Text(tAllTitle, style = MaterialTheme.typography.titleMedium)
         }
@@ -695,10 +742,13 @@ fun ChecksTab(regionType: CalendarType) {
                 c = c,
                 regionType = regionType,
                 onToggle = {
-                    ChequeStore.setDone(ctx, c.id, !c.done)
+                    val nowDone = !c.done
+                    ChequeStore.setDone(ctx, c.id, nowDone)
+                    scheduleCheque(ctx, c.copy(done = nowDone), tAlertPrefix, tDueWord, regionType)
                     version++
                 },
                 onDelete = {
+                    AlertWork.cancel(ctx, chequeAlertName(c.id))
                     ChequeStore.delete(ctx, c.id)
                     version++
                 }
