@@ -29,8 +29,13 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
     var showManual by rememberSaveable { mutableStateOf(false) }
     var gpsBusy by remember { mutableStateOf(false) }
     var gpsReason by remember { mutableStateOf<GpsFail?>(null) }
+    var autoHours by remember { mutableStateOf(WeatherAuto.hours(ctx)) }
 
-    LaunchedEffect(Unit) { WeatherStore.loadUnit(ctx) }
+    LaunchedEffect(Unit) {
+        WeatherStore.loadUnit(ctx)
+        WeatherStore.onScreenOpened(ctx)
+        WeatherAuto.ensure(ctx)
+    }
 
     // همه متن‌ها اینجا ساخته می‌شوند
     val tMyLocation = tr("موقعیت من", "My location", "موقعي")
@@ -66,6 +71,31 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
     val tRefresh = tr("به‌روزرسانی", "Refresh", "تحديث")
     val tNext24 = tr("۲۴ ساعت آینده", "Next 24 hours", "الساعات الـ24 القادمة")
     val tForecastTitle = tr("پیش‌بینی ۵ روز آینده", "5-day forecast", "توقعات 5 أيام")
+
+    // به‌روزرسانی خودکار
+    val tAutoTitle = tr("به‌روزرسانی خودکار", "Auto update", "التحديث التلقائي")
+    val tAutoHint = tr(
+        "هر چند ساعت یک بار، وقتی گوشی به اینترنت وصل باشد، اطلاعات هوا تازه می‌شود.",
+        "Refreshes every few hours when the phone is online.",
+        "يتم التحديث كل بضع ساعات عند توفر الإنترنت."
+    )
+    val autoOptions: List<Pair<Int, String>> = listOf(
+        0 to tr("خاموش", "Off", "إيقاف"),
+        1 to tr("هر ۱ ساعت", "Every 1 h", "كل ساعة"),
+        2 to tr("هر ۲ ساعت", "Every 2 h", "كل ساعتين"),
+        6 to tr("هر ۶ ساعت", "Every 6 h", "كل 6 ساعات"),
+        12 to tr("هر ۱۲ ساعت", "Every 12 h", "كل 12 ساعة"),
+        24 to tr("هر ۲۴ ساعت", "Every 24 h", "كل 24 ساعة")
+    )
+
+    // زمان آخرین به‌روزرسانی
+    val lastMs = WeatherStore.lastUpdatedMillis(ctx)
+    val tLastPrefix = tr("آخرین به‌روزرسانی: ", "Last updated: ", "آخر تحديث: ")
+    val lastText = if (lastMs > 0L) {
+        tLastPrefix + formatWith(lastMs, "yyyy/MM/dd HH:mm", regionType.locale, regionType.timeZone)
+    } else {
+        ""
+    }
 
     val gps = rememberGpsAction(
         label = tMyLocation,
@@ -139,6 +169,9 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             }
+                            if (lastText.isNotEmpty()) {
+                                Text(lastText, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                         WeatherState.None -> Text(tNoCity)
                         WeatherState.Loading -> Text(tLoading)
@@ -191,6 +224,37 @@ fun WeatherScreen(vm: MainViewModel, regionType: CalendarType) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(tRefresh)
+                    }
+                }
+            }
+        }
+
+        // به‌روزرسانی خودکار
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(tAutoTitle, style = MaterialTheme.typography.titleSmall)
+                    Text(tAutoHint, style = MaterialTheme.typography.bodySmall)
+                    autoOptions.chunked(3).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            rowItems.forEach { (value, label) ->
+                                FilterChip(
+                                    selected = autoHours == value,
+                                    onClick = {
+                                        autoHours = value
+                                        WeatherAuto.setHours(ctx, value)
+                                    },
+                                    label = { Text(label, maxLines = 1) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -272,6 +336,7 @@ private fun ForecastRow(day: DayForecast, regionType: CalendarType, lang: String
     val dateText = formatWith(day.dateMillis, "EEEE d MMM", regionType.locale, utcZone)
     val rangeText = "▼ " + tempText(day.min, unitF) + "  ▲ " + tempText(day.max, unitF)
     val word = conditionWord(day.code, lang)
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -397,11 +462,9 @@ fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text(tLabel) }
                 )
-
                 if (searching) {
                     Text(tSearching, style = MaterialTheme.typography.bodySmall)
                 }
-
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -426,7 +489,6 @@ fun ManualCityDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
                         }
                     }
                 }
-
                 if (searched && !searching && results.isEmpty()) {
                     Text(tNotFound, style = MaterialTheme.typography.bodySmall)
                 }
