@@ -35,7 +35,6 @@ import org.json.JSONArray
 
 // دیتابیس پیامک‌های واردشده؛ در بکاپ هم ذخیره می‌شود (خط BACKUP_DBS را ببین)
 const val SMS_DB_NAME = "hesabyar_sms.db"
-
 private const val SMS_PREFS = "hesabyar_sms"
 private const val SMS_SENDERS_KEY = "senders"
 private const val SMS_SCAN_LIMIT = 1000
@@ -101,6 +100,7 @@ private fun readInboxFor(ctx: Context, senders: List<String>): List<SmsMessage> 
         null,
         "${Telephony.Sms.DATE} DESC LIMIT $SMS_SCAN_LIMIT"
     ) ?: return out
+
     cursor.use { c ->
         val iAddress = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
         val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
@@ -237,10 +237,41 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     )
     val tAllow = tr("اجازه می‌دهم", "Allow", "أسمح")
     val tCancel = tr("انصراف", "Cancel", "إلغاء")
+    val tGrantedOk = tr("دسترسی پیامک فعال است ✓", "SMS access is on ✓", "الوصول إلى الرسائل مفعل ✓")
+    val tGuideTitle = tr(
+        "اگر اجازه داده نشد، این مراحل را انجام دهید:",
+        "If access was refused, follow these steps:",
+        "إذا لم يُمنح الإذن، اتبع هذه الخطوات:"
+    )
+    val tStep1 = tr(
+        "۱. دکمه «باز کردن تنظیمات برنامه» را بزنید.",
+        "1. Tap “Open app settings”.",
+        "١. اضغط «فتح إعدادات التطبيق»."
+    )
+    val tStep2 = tr(
+        "۲. بالا سمت راست، روی ⋮ بزنید و «Allow restricted settings» (اجازه دادن به تنظیمات محدودشده) را انتخاب کنید.",
+        "2. Tap ⋮ at the top right and choose “Allow restricted settings”.",
+        "٢. اضغط ⋮ في الأعلى واختر «Allow restricted settings» (السماح بالإعدادات المقيّدة)."
+    )
+    val tStep3 = tr(
+        "۳. با اثر انگشت یا قفل صفحه تأیید کنید.",
+        "3. Confirm with your fingerprint or screen lock.",
+        "٣. أكّد ببصمة الإصبع أو قفل الشاشة."
+    )
+    val tStep4 = tr(
+        "۴. به برنامه برگردید، «بررسی دوباره» را بزنید و سپس «اجازه دسترسی به پیامک‌ها» را بزنید.",
+        "4. Come back to the app, tap “Check again”, then “Allow SMS access”.",
+        "٤. ارجع إلى التطبيق واضغط «تحقق مرة أخرى» ثم «السماح بالوصول إلى الرسائل»."
+    )
+    val tTip = tr(
+        "اگر گزینه «Allow restricted settings» دیده نشد، یک بار اجازه را بزنید و در پنجره‌ای که باز می‌شود «رد» را انتخاب کنید؛ بعد مراحل بالا را دوباره انجام دهید.",
+        "If “Allow restricted settings” is missing, tap Allow once, choose Deny in the window, then repeat the steps above.",
+        "إذا لم يظهر «Allow restricted settings»، اضغط السماح مرة واحدة واختر رفض في النافذة، ثم كرر الخطوات أعلاه."
+    )
+    val tNoSenders = tr("هنوز سرشماره‌ای اضافه نشده است.", "No sender numbers yet.", "لم تُضف أي أرقام بعد.")
     val tSendersTitle = tr("سرشماره‌های مجاز", "Allowed sender numbers", "أرقام المرسل المسموح بها")
     val tSenderLabel = tr("سرشماره یا نام فرستنده", "Sender number or name", "رقم المرسل أو اسمه")
     val tAddSender = tr("افزودن", "Add", "إضافة")
-    val tNoSenders = tr("هنوز سرشماره‌ای اضافه نشده است.", "No sender numbers yet.", "لم تُضف أي أرقام بعد.")
     val tRemove = tr("حذف", "Delete", "حذف")
     val tScan = tr("نمایش پیامک‌های این سرشماره‌ها", "Show messages from these senders", "عرض الرسائل من هؤلاء المرسلين")
     val tLoading = tr("در حال خواندن پیامک‌ها...", "Reading messages...", "جارٍ قراءة الرسائل...")
@@ -260,16 +291,12 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     val tNeedSender = tr("اول یک سرشماره اضافه کنید.", "Add a sender number first.", "أضف رقم مرسل أولاً.")
     val tSavedTx = tr("تراکنش ثبت شد ✓", "Transaction recorded ✓", "تم تسجيل المعاملة ✓")
     val tNoPerm = tr("اجازه پیامک داده نشد.", "SMS permission was not granted.", "لم يُمنح إذن الرسائل.")
+    val tStillNo = tr("هنوز اجازه پیامک فعال نیست.", "SMS access is still not on.", "الوصول إلى الرسائل ما زال غير مفعل.")
     val tNotFound = tr("پیامکی از این سرشماره‌ها پیدا نشد.", "No messages found from these senders.", "لم يُعثر على رسائل من هؤلاء المرسلين.")
-    val tDeniedHelp = tr(
-        "اگر پنجره اجازه باز نشد یا اجازه داده نشد، از تنظیمات برنامه، دسترسی پیامک را فعال کنید.",
-        "If the permission window did not open or was refused, enable SMS in the app settings.",
-        "إذا لم تظهر نافذة الإذن أو رُفض، فعّل الرسائل من إعدادات التطبيق."
-    )
     val tOpenAppSettings = tr("باز کردن تنظیمات برنامه", "Open app settings", "فتح إعدادات التطبيق")
+    val tRecheck = tr("بررسی دوباره", "Check again", "تحقق مرة أخرى")
 
     var granted by remember { mutableStateOf(hasSmsPermission(ctx)) }
-    var deniedOnce by remember { mutableStateOf(false) }
     var askDialog by remember { mutableStateOf(false) }
     var senders by remember { mutableStateOf(loadSenders(ctx)) }
     var newSender by remember { mutableStateOf("") }
@@ -301,7 +328,6 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
     ) { _ ->
         // به جواب پنجره اعتماد نمی‌کنیم؛ وضعیت واقعی گوشی خوانده می‌شود
         granted = hasSmsPermission(ctx)
-        deniedOnce = !granted
         message = if (granted) null else tNoPerm
     }
 
@@ -313,6 +339,11 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         }
+    }
+
+    val recheck: () -> Unit = {
+        granted = hasSmsPermission(ctx)
+        message = if (granted) null else tStillNo
     }
 
     fun scan() {
@@ -353,22 +384,30 @@ fun SmsTab(vm: MainViewModel, regionType: CalendarType) {
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // توضیح و دکمه اجازه
+        // توضیح، دکمه اجازه و راهنما
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(tIntro, style = MaterialTheme.typography.bodySmall)
-                if (!granted) {
+                if (granted) {
+                    Text(tGrantedOk, style = MaterialTheme.typography.labelLarge)
+                } else {
                     Button(onClick = { askDialog = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(tAskBtn)
                     }
-                    if (deniedOnce) {
-                        Text(tDeniedHelp, style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = openAppSettings, modifier = Modifier.fillMaxWidth()) {
-                            Text(tOpenAppSettings)
-                        }
+                    Text(tGuideTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(tStep1, style = MaterialTheme.typography.bodySmall)
+                    Text(tStep2, style = MaterialTheme.typography.bodySmall)
+                    Text(tStep3, style = MaterialTheme.typography.bodySmall)
+                    Text(tStep4, style = MaterialTheme.typography.bodySmall)
+                    Text(tTip, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = openAppSettings, modifier = Modifier.fillMaxWidth()) {
+                        Text(tOpenAppSettings)
+                    }
+                    OutlinedButton(onClick = recheck, modifier = Modifier.fillMaxWidth()) {
+                        Text(tRecheck)
                     }
                 }
             }
