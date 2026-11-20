@@ -10,9 +10,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -20,7 +23,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hesabyar.app.R
@@ -58,44 +60,112 @@ private fun <T> EqualChipRow(
     }
 }
 
+// ================= تاریخ بر اساس تقویم زبان =================
+
+// نمونه تاریخ امروز با تقویم زبان انتخابی (مثلاً 1404/01/31 یا 2025/01/31)
+fun todayExample(type: CalendarType): String =
+    formatWith(System.currentTimeMillis(), "yyyy/MM/dd", type.locale, type.timeZone)
+
+// تبدیل تاریخ نوشته‌شده به زمان، طبق تقویم زبان انتخابی.
+// خروجی: ابتدای همان روز در منطقه زمانی زبان. اگر تاریخ معتبر نباشد null می‌دهد.
+fun parseDayIn(text: String, type: CalendarType): Long? {
+    val clean = text.trim()
+    if (clean.length < 8) return null
+    val parts = asciiDigits(clean).split('/', '-', '.').map { it.trim() }
+    if (parts.size != 3) return null
+    val y = parts[0].toIntOrNull() ?: return null
+    val m = parts[1].toIntOrNull() ?: return null
+    val d = parts[2].toIntOrNull() ?: return null
+    if (m !in 1..12 || d !in 1..31) return null
+
+    val target = listOf(y, m, d)
+
+    fun dayOf(millis: Long): List<Int> =
+        asciiDigits(formatWith(millis, "yyyy/MM/dd", type.locale, type.timeZone))
+            .split('/')
+            .map { it.trim().toIntOrNull() ?: -1 }
+
+    // سال میلادی تقریبی برای شروع جست‌وجو
+    val approxGreg = when (type) {
+        CalendarType.PERSIAN -> y + 621
+        CalendarType.HIJRI -> (y * 0.970229 + 621.5).toInt()
+        else -> y
+    }
+    val start = java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC")).apply {
+        clear()
+        set(approxGreg, 0, 1)
+    }.timeInMillis - 30L * DAY_MS
+
+    // جست‌وجو روز به روز تا روزی که تاریخش برابر ورودی کاربر باشد
+    var t = start
+    var hit: Long? = null
+    for (i in 0 until 900) {
+        if (dayOf(t) == target) {
+            hit = t
+            break
+        }
+        t += DAY_MS
+    }
+    val day = hit ?: return null
+
+    // پیدا کردن اولین لحظه همان روز (جست‌وجوی دودویی تا دقیقه)
+    var lo = day - DAY_MS
+    var hi = day
+    while (hi - lo > 60_000L) {
+        val mid = lo + (hi - lo) / 2
+        if (dayOf(mid) == target) hi = mid else lo = mid
+    }
+    return hi
+}
+
 // ================= تب حسابداری با زیرتب‌ها =================
 
 @Composable
 fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
     var tab by rememberSaveable { mutableStateOf(0) }
+    var showImageSearch by rememberSaveable { mutableStateOf(false) }
+
     val titles = listOf(
         tr("تراکنش‌ها", "Transactions", "المعاملات"),
         tr("گزارش‌ها", "Reports", "التقارير"),
         tr("چک و سفته", "Cheques & notes", "الشيكات والسندات"),
-        tr("پیامک‌ها", "SMS", "الرسائل")
+        tr("پیامک‌ها", "SMS", "الرسائل"),
+        tr("کالاها", "Inventory", "المخزون")
     )
+    val searchByPhotoText = tr("جست‌وجو با عکس", "Search by photo", "بحث بالصورة")
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // چهار زیرتب با عرض برابر
-        TabRow(selectedTabIndex = tab) {
-            titles.forEachIndexed { i, title ->
-                Tab(
-                    selected = tab == i,
-                    onClick = { tab = i },
-                    text = {
-                        Text(
-                            title,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                )
-            }
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            EqualChipRow(
+                options = titles.mapIndexed { i, t -> i to t },
+                selected = tab,
+                onSelect = { tab = it },
+                columns = 3
+            )
         }
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
                 0 -> LedgerScreen(vm, regionType)
                 1 -> ReportsTab(vm, regionType)
                 2 -> ChecksTab(regionType)
-                else -> SmsTab(vm)
+                3 -> SmsTab(vm, regionType)
+                else -> InventoryScreen(vm, regionType)
+            }
+            if (tab == 4) {
+                ExtendedFloatingActionButton(
+                    onClick = { showImageSearch = true },
+                    icon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    text = { Text(searchByPhotoText) },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                )
             }
         }
+    }
+
+    if (showImageSearch) {
+        ImageSearchDialog(onDismiss = { showImageSearch = false })
     }
 }
 
@@ -104,14 +174,14 @@ fun AccountingScreen(vm: MainViewModel, regionType: CalendarType) {
 @Composable
 fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val all by vm.transactions.collectAsState()
-
     var period by remember { mutableStateOf(BackupPeriod.MONTHLY) }
     var typeFilter by rememberSaveable { mutableStateOf(0) } // 0 همه، 1 درآمد، 2 هزینه
     var sortByAmount by rememberSaveable { mutableStateOf(false) }
     var fromText by rememberSaveable { mutableStateOf("") }
     var toText by rememberSaveable { mutableStateOf("") }
 
-    // گزینه‌ها فقط اینجا ساخته می‌شوند
+    // گزینه‌ها و متن‌ها فقط اینجا ساخته می‌شوند
+    val exampleDate = remember(regionType) { todayExample(regionType) }
     val tPeriodLabel = tr("بازه زمانی", "Period", "الفترة")
     val periodOptions = listOf(
         BackupPeriod.DAILY to tr("روزانه", "Daily", "يومي"),
@@ -130,13 +200,10 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
         false to tr("بر اساس تاریخ", "By date", "حسب التاريخ"),
         true to tr("بر اساس مبلغ", "By amount", "حسب المبلغ")
     )
-    val tFromLabel = tr("از تاریخ (مثلاً 2025/01/01)", "From (e.g. 2025/01/01)", "من (مثال 2025/01/01)")
-    val tToLabel = tr("تا تاریخ (مثلاً 2025/01/31)", "To (e.g. 2025/01/31)", "إلى (مثال 2025/01/31)")
-    val tDateHelp = tr(
-        "تاریخ‌ها را به شکل 2025/01/31 بنویسید.",
-        "Write dates like 2025/01/31.",
-        "اكتب التواريخ مثل 2025/01/31."
-    )
+    val tFromLabel = tr("از تاریخ", "From", "من") + " (" + tr("مثلاً", "e.g.", "مثال") + " " + exampleDate + ")"
+    val tToLabel = tr("تا تاریخ", "To", "إلى") + " (" + tr("مثلاً", "e.g.", "مثال") + " " + exampleDate + ")"
+    val tDateHelp = tr("تاریخ‌ها را مثل ", "Write dates like ", "اكتب التواريخ مثل ") +
+        exampleDate + tr(" بنویسید.", ".", ".")
     val tIncomeTotal = tr("مجموع درآمد", "Total income", "إجمالي الدخل")
     val tExpenseTotal = tr("مجموع هزینه", "Total expense", "إجمالي المصروف")
     val tBalance = tr("مانده (درآمد منهای هزینه)", "Balance (income minus expense)", "الرصيد (الدخل ناقص المصروف)")
@@ -145,17 +212,15 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
     val tNone = tr("موردی در این بازه نیست.", "No items in this period.", "لا توجد عناصر في هذه الفترة.")
     val currency = stringResource(R.string.currency)
 
-    val fromMs = parseBackupDay(fromText)
-    val toMs = parseBackupDay(toText)
+    val fromMs = remember(fromText, regionType) { parseDayIn(fromText, regionType) }
+    val toMs = remember(toText, regionType) { parseDayIn(toText, regionType) }
     val customInvalid = period == BackupPeriod.CUSTOM && (fromMs == null || toMs == null)
     val range: BackupRange? = if (customInvalid) null else backupRangeFor(period, fromMs, toMs)
-
     val inPeriod: List<TransactionEntity> = if (customInvalid) {
         emptyList<TransactionEntity>()
     } else {
         all.filter { t -> range == null || t.dateMillis in range.from..range.to }
     }
-
     val income = inPeriod.filter { it.isIncome }.sumOf { it.amount }
     val expense = inPeriod.filter { !it.isIncome }.sumOf { it.amount }
     val shown = inPeriod.filter { typeFilter == 0 || (typeFilter == 1) == it.isIncome }
@@ -186,7 +251,6 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 columns = 3
             )
         }
-
         if (period == BackupPeriod.CUSTOM) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -212,7 +276,6 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 }
             }
         }
-
         item {
             EqualChipRow(
                 options = typeOptions,
@@ -221,7 +284,6 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 columns = 3
             )
         }
-
         item {
             EqualChipRow(
                 options = sortOptions,
@@ -230,7 +292,6 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 columns = 2
             )
         }
-
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -250,7 +311,6 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 )
             }
         }
-
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -263,11 +323,9 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 }
             }
         }
-
         item {
             Text(tByCategory, style = MaterialTheme.typography.titleMedium)
         }
-
         items(groups) { (key, sum) ->
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(
@@ -280,17 +338,14 @@ fun ReportsTab(vm: MainViewModel, regionType: CalendarType) {
                 SimpleBar(fraction = sum.toFloat() / maxGroup.toFloat())
             }
         }
-
         item {
             Text(tListHeader, style = MaterialTheme.typography.titleMedium)
         }
-
         if (details.isEmpty()) {
             item {
                 Text(tNone)
             }
         }
-
         items(details, key = { it.id }) { t ->
             TransactionRow(t = t, type = regionType, onDelete = { vm.deleteTransaction(t) })
         }
@@ -463,6 +518,9 @@ fun ChecksTab(regionType: CalendarType) {
     var level by rememberSaveable { mutableStateOf(2) }
     var errText by remember { mutableStateOf<String?>(null) }
 
+    // نمونه تاریخ با تقویم زبان انتخابی (فارسی شمسی، عربی قمری، انگلیسی میلادی)
+    val exampleDate = remember(regionType) { todayExample(regionType) }
+
     // همه متن‌ها و گزینه‌ها داخل بدنه Compose ساخته می‌شوند
     val kindOptions = listOf(
         0 to tr("چک", "Cheque", "شيك"),
@@ -481,7 +539,7 @@ fun ChecksTab(regionType: CalendarType) {
     val tAddTitle = tr("ثبت چک یا سفته", "Add cheque or note", "إضافة شيك أو سند")
     val tPartyLabel = tr("طرف حساب", "Person / party", "الطرف")
     val tAmountLabel = stringResource(R.string.amount) + " (" + stringResource(R.string.currency) + ")"
-    val tDueLabel = tr("سررسید (مثلاً 2025/01/31)", "Due date (e.g. 2025/01/31)", "الاستحقاق (مثال 2025/01/31)")
+    val tDueLabel = tr("سررسید", "Due date", "الاستحقاق") + " (" + tr("مثلاً", "e.g.", "مثال") + " " + exampleDate + ")"
     val tRemindTitle = tr("هشدار قبل از سررسید", "Remind before due date", "تنبيه قبل الاستحقاق")
     val tLevelTitle = tr("درجه اعلان", "Notification level", "درجة الإشعار")
     val tAddBtn = stringResource(R.string.add)
@@ -493,7 +551,8 @@ fun ChecksTab(regionType: CalendarType) {
     // متن خطاها هم اینجا ساخته می‌شوند، نه داخل onClick
     val errNameText = tr("نام طرف حساب را وارد کنید", "Enter the party name", "أدخل اسم الطرف")
     val errAmountText = tr("مبلغ معتبر وارد کنید", "Enter a valid amount", "أدخل مبلغاً صحيحاً")
-    val errDateText = tr("تاریخ را به شکل 2025/01/31 بنویسید", "Write the date like 2025/01/31", "اكتب التاريخ مثل 2025/01/31")
+    val errDateText = tr("تاریخ را مثل ", "Write the date like ", "اكتب التاريخ مثل ") +
+        exampleDate + tr(" بنویسید", "", "")
 
     val alerts = cheques.filter { !it.done && now >= it.dueMillis - it.remindDays * DAY_MS }
     val hasLevel1 = alerts.any { it.level == 1 }
@@ -510,21 +569,18 @@ fun ChecksTab(regionType: CalendarType) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(tAddTitle, style = MaterialTheme.typography.titleMedium)
-
                     EqualChipRow(
                         options = kindOptions,
                         selected = kind,
                         onSelect = { kind = it },
                         columns = 2
                     )
-
                     EqualChipRow(
                         options = directionOptions,
                         selected = direction,
                         onSelect = { direction = it },
                         columns = 2
                     )
-
                     OutlinedTextField(
                         value = person,
                         onValueChange = { person = it },
@@ -532,7 +588,6 @@ fun ChecksTab(regionType: CalendarType) {
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(tPartyLabel) }
                     )
-
                     OutlinedTextField(
                         value = amountText,
                         onValueChange = { amountText = digitsOnly(it) },
@@ -542,7 +597,6 @@ fun ChecksTab(regionType: CalendarType) {
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(tAmountLabel) }
                     )
-
                     OutlinedTextField(
                         value = dueText,
                         onValueChange = { dueText = it },
@@ -550,7 +604,6 @@ fun ChecksTab(regionType: CalendarType) {
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text(tDueLabel) }
                     )
-
                     Text(tRemindTitle, style = MaterialTheme.typography.labelLarge)
                     EqualChipRow(
                         options = remindOptions,
@@ -558,7 +611,6 @@ fun ChecksTab(regionType: CalendarType) {
                         onSelect = { remindDays = it },
                         columns = 3
                     )
-
                     Text(tLevelTitle, style = MaterialTheme.typography.labelLarge)
                     EqualChipRow(
                         options = levelOptions,
@@ -567,13 +619,11 @@ fun ChecksTab(regionType: CalendarType) {
                         columns = 3
                     )
                     Text(levelText(level), style = MaterialTheme.typography.bodySmall)
-
                     errText?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-
                     Button(
                         onClick = {
                             val amount = amountText.toLongOrNull()
-                            val due = parseBackupDay(dueText)
+                            val due = parseDayIn(dueText, regionType)
                             when {
                                 person.isBlank() -> errText = errNameText
                                 amount == null || amount <= 0L -> errText = errAmountText
@@ -634,13 +684,11 @@ fun ChecksTab(regionType: CalendarType) {
         item {
             Text(tAllTitle, style = MaterialTheme.typography.titleMedium)
         }
-
         if (cheques.isEmpty()) {
             item {
                 Text(tNoEntries)
             }
         }
-
         items(cheques, key = { it.id }) { c ->
             ChequeRow(
                 c = c,
