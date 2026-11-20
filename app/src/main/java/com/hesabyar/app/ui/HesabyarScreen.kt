@@ -40,6 +40,8 @@ private const val CUSTOM_PREFIX = "custom:"
 private const val OTHER_EXPENSE = "other_expense"
 private const val OTHER_INCOME = "other_income"
 
+private fun moneyText(v: Long, lang: String): String = langDigits(formatMoney(v), lang)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HesabyarScreen(vm: MainViewModel = viewModel()) {
@@ -49,15 +51,23 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
     val deviceClock by vm.deviceClock.collectAsState()
     val tabsTop = ThemeStore.settings.tabsTop
 
-    // ۶ صفحه به ترتیب: ۰ حسابداری (شامل کالاها)، ۱ آب‌وهوا، ۲ یادداشت‌ها، ۳ مرورگر، ۴ دانلود، ۵ تنظیمات
+    // ۶ صفحه به ترتیب: ۰ حسابداری، ۱ آب‌وهوا، ۲ یادداشت‌ها، ۳ مرورگر، ۴ دانلود، ۵ تنظیمات
     val pagerState = rememberPagerState(pageCount = { 6 })
     val scope = rememberCoroutineScope()
+    var showManualCity by rememberSaveable { mutableStateOf(false) }
 
-    var showLocationSetup by rememberSaveable { mutableStateOf(!WeatherStore.hasLocation(context)) }
+    // تقویم سال مالی: تا وقتی کاربر دستی انتخاب نکرده، با زبان برنامه عوض می‌شود
+    LaunchedEffect(lang) {
+        if (fiscalAutoOn(context)) vm.setFiscal(CalendarType.forLanguage(lang))
+    }
 
     LaunchedEffect(Unit) {
         if (WeatherStore.hasLocation(context)) WeatherStore.refresh(context)
+        WeatherAuto.ensure(context)
     }
+
+    // درخواست GPS هنگام ورود؛ در صورت نبودن موقعیت، ورود دستی شهر
+    StartupLocationRequest(onNeedManual = { showManualCity = true })
 
     val onTab: (Int) -> Unit = { page ->
         scope.launch { pagerState.animateScrollToPage(page) }
@@ -65,16 +75,15 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
 
     Column(modifier = Modifier.fillMaxSize()) {
         ClockHeader(regionType = regionType, deviceClock = deviceClock)
-
         if (tabsTop) {
             ThemePartScope(ThemePart.TABS) {
                 AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
             }
         }
-
-        Box(modifier = Modifier
-            .weight(1f)
-            .fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
         ) {
             ThemePartScope(ThemePart.TEXT) {
                 HorizontalPager(
@@ -92,7 +101,6 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
                 }
             }
         }
-
         if (!tabsTop) {
             ThemePartScope(ThemePart.TABS) {
                 AppTabBar(selected = pagerState.currentPage, onSelect = onTab)
@@ -100,14 +108,15 @@ fun HesabyarScreen(vm: MainViewModel = viewModel()) {
         }
     }
 
-    if (showLocationSetup) {
-        LocationSetupDialog(onDone = { showLocationSetup = false })
+    if (showManualCity && !WeatherStore.hasLocation(context)) {
+        ManualCityDialog(
+            onDismiss = { showManualCity = false },
+            onSaved = { showManualCity = false }
+        )
     }
 }
 
 // ---------- نوار تب‌ها (شیشه‌ای، بالا یا پایین) ----------
-
-// هر تب یا آیکون Material دارد یا یک نماد متنی (مثل 🌐) تا به کتابخانه آیکون اضافی نیاز نباشد
 private class BarTab(val label: String, val icon: ImageVector?, val glyph: String?)
 
 @Composable
@@ -165,7 +174,6 @@ fun AppTabBar(selected: Int, onSelect: (Int) -> Unit) {
 }
 
 // ---------- هدر شیشه‌ای: دکمه تم، تاریخ و ساعت، آب‌وهوا ----------
-
 @Composable
 fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     val context = LocalContext.current
@@ -179,19 +187,18 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
     }
     val locale = if (deviceClock) deviceLocale() else regionType.locale
     val zone = if (deviceClock) deviceTimeZone() else regionType.timeZone
-    val dateText = formatWith(now, "EEEE, yyyy/MM/dd", locale, zone)
-    val timeText = formatWith(now, ClockFormat.timePattern(is24), locale, zone)
+    val dateText = langDigits(formatWith(now, "EEEE, yyyy/MM/dd", locale, zone), lang)
+    val timeText = langDigits(formatWith(now, ClockFormat.timePattern(is24), locale, zone), lang)
     val dark = isDarkNow()
     val weather = WeatherStore.state
     val glyphCode = (weather as? WeatherState.Ok)?.info?.code ?: -1
 
-    // دما: تبدیل به فارنهایت داخل همین فایل انجام می‌شود (°C یا °F)
     val tempLabel = when (weather) {
         is WeatherState.Ok -> {
             val base = weather.info.current.toDouble()
             val fahrenheit = WeatherStore.fahrenheit
             val shown = if (fahrenheit) base * 9.0 / 5.0 + 32.0 else base
-            "${shown.roundToInt()}°" + if (fahrenheit) "F" else ""
+            langDigits("${shown.roundToInt()}°" + if (fahrenheit) "F" else "", lang)
         }
         WeatherState.Loading -> "…"
         WeatherState.Error -> "--°"
@@ -208,7 +215,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
 
     val headerColor = partColor(ThemePart.HEADER, currentModeColors().primary)
     val onHeader = onColorFor(headerColor)
-
     ThemePartScope(ThemePart.HEADER) {
         Box(
             modifier = Modifier
@@ -275,7 +281,6 @@ fun ClockHeader(regionType: CalendarType, deviceClock: Boolean) {
 }
 
 // ---------- تب حسابداری (بخش تراکنش‌ها؛ زیرتب‌ها در AccountingScreen هستند) ----------
-
 @Composable
 fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
     val transactions by vm.transactions.collectAsState()
@@ -312,6 +317,7 @@ fun LedgerScreen(vm: MainViewModel, regionType: CalendarType) {
 
 @Composable
 fun SummaryCard(balance: Long, income: Long, expense: Long) {
+    val lang = currentLang()
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -321,7 +327,7 @@ fun SummaryCard(balance: Long, income: Long, expense: Long) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(stringResource(R.string.balance), style = MaterialTheme.typography.titleSmall)
             Text(
-                text = "${formatMoney(balance)} ${stringResource(R.string.currency)}",
+                text = moneyText(balance, lang) + " " + stringResource(R.string.currency),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -330,8 +336,8 @@ fun SummaryCard(balance: Long, income: Long, expense: Long) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("${stringResource(R.string.income)}: ${formatMoney(income)}")
-                Text("${stringResource(R.string.expense)}: ${formatMoney(expense)}")
+                Text(stringResource(R.string.income) + ": " + moneyText(income, lang))
+                Text(stringResource(R.string.expense) + ": " + moneyText(expense, lang))
             }
         }
     }
@@ -470,12 +476,16 @@ fun AddTransactionCard(vm: MainViewModel) {
 @Composable
 fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Unit) {
     val is24 by ClockFormat.is24h.collectAsState()
+    val lang = currentLang()
     val categoryText = categoryName(t.category)
-    val dateText = formatWith(
-        t.dateMillis,
-        "yyyy/MM/dd " + ClockFormat.timePattern(is24),
-        type.locale,
-        type.timeZone
+    val dateText = langDigits(
+        formatWith(
+            t.dateMillis,
+            "yyyy/MM/dd " + ClockFormat.timePattern(is24),
+            type.locale,
+            type.timeZone
+        ),
+        lang
     )
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -492,7 +502,7 @@ fun TransactionRow(t: TransactionEntity, type: CalendarType, onDelete: () -> Uni
                 )
             }
             Text(
-                text = (if (t.isIncome) "+" else "-") + formatMoney(t.amount),
+                text = (if (t.isIncome) "+" else "-") + moneyText(t.amount, lang),
                 color = if (t.isIncome) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
                 fontWeight = FontWeight.Bold
             )
